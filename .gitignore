@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Builds
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+
+# Environment / secrets — never commit these
+.env
+.env.*
+!.env.example
+!.env.demo.example
+*.pem
+*.key
+
+# Tooling caches
+.vite/
+.turbo/
+.eslintcache
+.prettiercache
+.mypy_cache/
+__pycache__/
+
+# Supabase local state
+supabase/.branches/
+supabase/.temp/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Generated test artifacts
+test-results/
+playwright-report/

@@ -1,0 +1,43 @@
+{
+  "name": "insta-automation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant Instagram comment automation SaaS",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names server,client --prefix-colors blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm --workspace server run dev",
+    "dev:client": "npm --workspace client run dev",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "npm --workspace server run build",
+    "build:client": "npm --workspace client run build",
+    "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck",
+    "lint": "eslint .",
+    "test": "npm run test:server && npm run test:db && npm run test:client",
+    "test:server": "npm --workspace server run test",
+    "test:client": "npm --workspace client run test",
+    "test:db": "npm --workspace server run test:db",
+    "db:migrate": "npm --workspace server run db:migrate",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test:live": "npm --workspace server run test:live",
+    "dev:demo": "npm --workspace client run dev"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.2"
+  }
+}
