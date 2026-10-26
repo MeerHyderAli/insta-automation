@@ -1,0 +1,33 @@
+{
+  "name": "insta-comment-to-dm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Single-account Instagram comment-to-DM automation using the official Instagram API with Instagram Login",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0 -p 3000",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "simulate": "node scripts/simulate-webhook.mjs",
+    "ig:subscribe": "node scripts/subscribe-webhooks.mjs",
+    "ig:refresh-token": "node scripts/refresh-token.mjs"
+  },
+  "dependencies": {
+    "next": "15.5.28",
+    "pg": "^8.16.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/pg": "^8.15.4",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+coverage/
+.vercel/
+
+# Secrets — never commit real env files
+.env
+.env.local
+.env.*.local
+
+# Local comment store (contains usernames/comment text)
+data/
+*.log
+.DS_Store
+
+*.tsbuildinfo
