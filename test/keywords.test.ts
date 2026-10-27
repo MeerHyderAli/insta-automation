@@ -53,10 +53,17 @@ describe('parseKeywords', () => {
 
 
 describe('follow gate config', () => {
-  it('enables both follow checks by default', () => {
+  it('enables both follow checks and comment-first prompting by default', () => {
     expect(getConfig({})).toMatchObject({
       requireFollowBeforePrompt: true,
+      promptUnverifiedCommenters: true,
       requireFollowForLink: true,
+    });
+  });
+
+  it('can opt out of prompting commenters whose first check is unverified', () => {
+    expect(getConfig({ PROMPT_UNVERIFIED_COMMENTERS: 'false' })).toMatchObject({
+      promptUnverifiedCommenters: false,
     });
   });
 

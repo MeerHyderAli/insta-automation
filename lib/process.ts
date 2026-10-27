@@ -286,19 +286,26 @@ export async function processCommentEvents(
       let followStatus: FollowStatus = 'not_checked';
 
       // FOLLOW CHECK #1 — before the "Thanks for commenting" prompt DM.
+      // Meta only grants User Profile consent after a messaging interaction,
+      // so a comment-first user is normally unverified here (error 230).
+      // PROMPT_UNVERIFIED_COMMENTERS lets that user receive the prompt; the
+      // button tap is the messaging interaction used by strict check #2.
       if (config.requireFollowBeforePrompt) {
-        if (config.dryRun && !hasInjectedFollowChecker) {
-          await store.update(comment.commentId, {
-            dmStatus: 'skipped_follow_unverified',
-            matchedKeyword,
-            followStatus: 'unverified',
-            error: 'Follow status is not checked in DRY_RUN mode; no reply sent',
-          });
-          summary.skippedFollowUnverified += 1;
-          continue;
-        }
+        const commenterId = comment.commenterId;
 
-        if (!config.accessToken && !config.dryRun) {
+        if (config.dryRun && !hasInjectedFollowChecker) {
+          if (!config.promptUnverifiedCommenters) {
+            await store.update(comment.commentId, {
+              dmStatus: 'skipped_follow_unverified',
+              matchedKeyword,
+              followStatus: 'unverified',
+              error: 'Follow status is not checked in DRY_RUN mode; no reply sent',
+            });
+            summary.skippedFollowUnverified += 1;
+            continue;
+          }
+          followStatus = 'unverified';
+        } else if (!config.accessToken && !config.dryRun) {
           await store.update(comment.commentId, {
             dmStatus: 'failed',
             matchedKeyword,
@@ -307,48 +314,52 @@ export async function processCommentEvents(
           });
           summary.failed += 1;
           continue;
-        }
-
-        if (!comment.commenterId) {
-          await store.update(comment.commentId, {
-            dmStatus: 'skipped_follow_unverified',
-            matchedKeyword,
-            followStatus: 'unverified',
-            error: 'Webhook did not include the commenter Instagram-scoped ID',
+        } else if (!commenterId) {
+          if (!config.promptUnverifiedCommenters) {
+            await store.update(comment.commentId, {
+              dmStatus: 'skipped_follow_unverified',
+              matchedKeyword,
+              followStatus: 'unverified',
+              error: 'Webhook did not include the commenter Instagram-scoped ID',
+            });
+            summary.skippedFollowUnverified += 1;
+            continue;
+          }
+          followStatus = 'unverified';
+        } else {
+          const followResult = await runFollowCheck(checkFollow, {
+            igsid: commenterId,
+            accessToken: config.accessToken ?? '',
+            graphVersion: config.graphVersion,
           });
-          summary.skippedFollowUnverified += 1;
-          continue;
+
+          if (followResult.status === 'not_following') {
+            await store.update(comment.commentId, {
+              dmStatus: 'skipped_not_following',
+              matchedKeyword,
+              followStatus: 'not_following',
+              error: 'First follow check: Meta reported that this user does not follow the account',
+            });
+            summary.skippedNotFollowing += 1;
+            continue;
+          }
+
+          if (followResult.status === 'unverified') {
+            if (!config.promptUnverifiedCommenters) {
+              await store.update(comment.commentId, {
+                dmStatus: 'skipped_follow_unverified',
+                matchedKeyword,
+                followStatus: 'unverified',
+                error: followResult.error,
+              });
+              summary.skippedFollowUnverified += 1;
+              continue;
+            }
+            followStatus = 'unverified';
+          } else {
+            followStatus = 'following';
+          }
         }
-
-        const followResult = await runFollowCheck(checkFollow, {
-          igsid: comment.commenterId,
-          accessToken: config.accessToken ?? '',
-          graphVersion: config.graphVersion,
-        });
-
-        if (followResult.status === 'not_following') {
-          await store.update(comment.commentId, {
-            dmStatus: 'skipped_not_following',
-            matchedKeyword,
-            followStatus: 'not_following',
-            error: 'First follow check: Meta reported that this user does not follow the account',
-          });
-          summary.skippedNotFollowing += 1;
-          continue;
-        }
-
-        if (followResult.status === 'unverified') {
-          await store.update(comment.commentId, {
-            dmStatus: 'skipped_follow_unverified',
-            matchedKeyword,
-            followStatus: 'unverified',
-            error: followResult.error,
-          });
-          summary.skippedFollowUnverified += 1;
-          continue;
-        }
-
-        followStatus = 'following';
       }
 
       if (config.dryRun) {

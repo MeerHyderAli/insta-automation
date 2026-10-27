@@ -280,6 +280,14 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           check #2 runs again after the <code>{status.getLinkButtonText}</code> button tap.
           The link is sent only when Meta returns <code>is_user_follow_business=true</code>{' '}
           at the second check.
+          {status.promptUnverifiedCommenters ? (
+            <>
+              {' '}
+              If Meta cannot verify check #1 because the commenter has not messaged the
+              account yet, the prompt is still sent; the button tap creates the messaging
+              interaction used for check #2.
+            </>
+          ) : null}
         </div>
       ) : null}
 
@@ -391,8 +399,18 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             <StatusDot state={status.requireFollowBeforePrompt ? 'ok' : 'warn'} />
             <span>
               Follow check #1 (before prompt):{' '}
-              {status.requireFollowBeforePrompt ? 'enabled' : 'disabled'}{' '}
-              <span className="muted">(<code>REQUIRE_FOLLOW_BEFORE_PROMPT</code>)</span>
+              {status.requireFollowBeforePrompt ? 'enabled' : 'disabled'}
+              {status.requireFollowBeforePrompt
+                ? ` — unverified commenters: ${
+                    status.promptUnverifiedCommenters
+                      ? 'receive prompt, then check #2'
+                      : 'receive no prompt'
+                  }`
+                : ''}{' '}
+              <span className="muted">
+                (<code>REQUIRE_FOLLOW_BEFORE_PROMPT</code>,{' '}
+                <code>PROMPT_UNVERIFIED_COMMENTERS</code>)
+              </span>
             </span>
           </li>
           <li>

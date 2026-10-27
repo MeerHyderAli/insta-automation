@@ -34,6 +34,7 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     getLinkButtonText: 'Click to get link',
     tryAgainButtonText: 'Try again',
     requireFollowBeforePrompt: false,
+    promptUnverifiedCommenters: false,
     requireFollowForLink: false,
     dryRun: false,
     databaseUrl: null,
@@ -189,6 +190,62 @@ describe('processCommentEvents — first follow check + prompt', () => {
       dmStatus: 'skipped_follow_unverified',
       followStatus: 'unverified',
       error: 'User consent is required to access user profile',
+    });
+  });
+
+  it('can prompt an unverified comment-first user, then verify strictly after the tap', async () => {
+    const store = tempStore();
+    const config = testConfig({
+      requireFollowBeforePrompt: true,
+      promptUnverifiedCommenters: true,
+      requireFollowForLink: true,
+    });
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({
+      messageId: 'prompt-unverified',
+      recipientId: 'user-9',
+    }));
+    const sendUserDm = vi.fn(async (_input: SendUserDmInput) => ({
+      messageId: 'link-after-tap',
+      recipientId: 'user-9',
+    }));
+    const checkFollow = vi
+      .fn(async (_input: CheckFollowInput): Promise<FollowCheckResult> => ({
+        status: 'following',
+      }))
+      .mockResolvedValueOnce({
+        status: 'unverified' as const,
+        error: 'Instagram profile API error 230: User consent is required to access user profile',
+      });
+    const deps = { store, config, sendDm, sendUserDm, checkFollow };
+
+    const commentSummary = await processCommentEvents(
+      [testComment({ commentId: 'comment-consent-pending' })],
+      deps,
+    );
+
+    expect(commentSummary).toMatchObject({
+      matched: 1,
+      promptSent: 1,
+      skippedFollowUnverified: 0,
+    });
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect((await store.list(50))[0]).toMatchObject({
+      dmStatus: 'prompt_sent',
+      followStatus: 'unverified',
+    });
+
+    const tapSummary = await processMessageEvents(
+      [testClick({ payload: `${GET_LINK_PAYLOAD}:comment-consent-pending` })],
+      deps,
+    );
+
+    expect(tapSummary).toMatchObject({ clicks: 1, linkSent: 1, followPromptSent: 0 });
+    expect(checkFollow).toHaveBeenCalledTimes(2);
+    expect(sendUserDm).toHaveBeenCalledTimes(1);
+    expect((await store.list(50))[0]).toMatchObject({
+      dmStatus: 'link_sent',
+      followStatus: 'following',
+      dmMessageId: 'link-after-tap',
     });
   });
 

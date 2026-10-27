@@ -38,6 +38,8 @@ export interface AppConfig {
   getLinkButtonText: string;
   tryAgainButtonText: string;
   requireFollowBeforePrompt: boolean;
+  /** Send the prompt when check #1 is unverified (common before any DM). */
+  promptUnverifiedCommenters: boolean;
   requireFollowForLink: boolean;
   dryRun: boolean;
   databaseUrl: string | null;
@@ -189,6 +191,11 @@ export function getConfig(env: Env = process.env): AppConfig {
       ['REQUIRE_FOLLOW_BEFORE_PROMPT', 'REQUIRE_FOLLOW_TO_SEND'],
       true,
     ),
+    // A comment alone does not grant User Profile consent, so check #1 is
+    // unverified for many first-time commenters. By default those
+    // commenters receive the button prompt while check #2 stays strict;
+    // set PROMPT_UNVERIFIED_COMMENTERS=false for strict prompt gating.
+    promptUnverifiedCommenters: parseBoolean(env.PROMPT_UNVERIFIED_COMMENTERS, true),
     requireFollowForLink: parseBooleanFrom(
       env,
       ['REQUIRE_FOLLOW_FOR_LINK', 'REQUIRE_FOLLOW_TO_SEND'],
@@ -219,6 +226,7 @@ export function getConfigStatus(config: AppConfig) {
     getLinkButtonText: config.getLinkButtonText,
     tryAgainButtonText: config.tryAgainButtonText,
     requireFollowBeforePrompt: config.requireFollowBeforePrompt,
+    promptUnverifiedCommenters: config.promptUnverifiedCommenters,
     requireFollowForLink: config.requireFollowForLink,
     // Deprecated health alias: true only when both checks are enabled.
     requireFollow: config.requireFollowBeforePrompt && config.requireFollowForLink,
