@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { getConfig } from '../lib/config';
+import { subscribeInstagramWebhooks } from '../lib/instagram';
 import { getStore } from '../lib/store';
 
 function fieldValue(formData: FormData, name: string): string {
@@ -28,6 +29,12 @@ function dashboardWritesEnabled(): boolean {
 
 function redirectWithStatus(status: string): never {
   redirect(`/?resourceStatus=${status}#reel-resources`);
+}
+
+function redirectWithSetupStatus(status: string, error?: string): never {
+  const params = new URLSearchParams({ setupStatus: status });
+  if (error) params.set('setupError', error.slice(0, 240));
+  redirect(`/?${params.toString()}#setup-checklist`);
 }
 
 function validMediaId(mediaId: string): boolean {
@@ -73,4 +80,27 @@ export async function deleteMediaResource(formData: FormData): Promise<void> {
 
   revalidatePath('/');
   redirectWithStatus('deleted');
+}
+
+
+export async function subscribeInstagramAccount(_formData: FormData): Promise<void> {
+  if (!dashboardWritesEnabled()) redirectWithSetupStatus('auth-required');
+
+  const config = getConfig();
+  if (!config.accessToken) redirectWithSetupStatus('token-missing');
+
+  try {
+    await subscribeInstagramWebhooks({
+      accessToken: config.accessToken,
+      graphVersion: config.graphVersion,
+    });
+  } catch (error) {
+    redirectWithSetupStatus(
+      'subscribe-error',
+      error instanceof Error ? error.message : 'Unknown Instagram API error',
+    );
+  }
+
+  revalidatePath('/');
+  redirectWithSetupStatus('subscribed');
 }

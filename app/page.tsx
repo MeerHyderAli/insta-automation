@@ -1,7 +1,8 @@
 import { getConfig, getConfigStatus } from '../lib/config';
+import { listOwnMedia, type InstagramMediaSummary } from '../lib/instagram';
 import { getStore } from '../lib/store';
 import type { CommentRecord, DmStatus, FollowStatus, MediaResource } from '../lib/types';
-import { deleteMediaResource, saveMediaResource } from './actions';
+import { deleteMediaResource, saveMediaResource, subscribeInstagramAccount } from './actions';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,8 +47,20 @@ function StatusDot({ state }: { state: 'ok' | 'missing' | 'warn' }) {
 }
 
 interface DashboardPageProps {
-  searchParams?: Promise<{ resourceStatus?: string | string[] }>;
+  searchParams?: Promise<{
+    resourceStatus?: string | string[];
+    setupStatus?: string | string[];
+    setupError?: string | string[];
+  }>;
 }
+
+const SETUP_STATUS_MESSAGES: Record<string, string> = {
+  subscribed:
+    'Instagram account subscribed to comments, messages, and messaging_postbacks webhooks.',
+  'auth-required': 'Set DASHBOARD_USERNAME and DASHBOARD_PASSWORD before using dashboard setup actions.',
+  'token-missing': 'Add IG_ACCESS_TOKEN in Vercel before subscribing the Instagram account.',
+  'subscribe-error': 'Instagram webhook subscription failed.',
+};
 
 const RESOURCE_STATUS_MESSAGES: Record<string, string> = {
   saved: 'Resource saved. New comments on that Reel will use it immediately — no redeploy needed.',
@@ -67,6 +80,13 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const resourceStatusMessage = resourceStatus
     ? RESOURCE_STATUS_MESSAGES[resourceStatus]
     : null;
+  const setupStatus = Array.isArray(params.setupStatus) ? params.setupStatus[0] : params.setupStatus;
+  const setupError = Array.isArray(params.setupError) ? params.setupError[0] : params.setupError;
+  const setupStatusMessage = setupStatus
+    ? setupStatus === 'subscribe-error' && setupError
+      ? `${SETUP_STATUS_MESSAGES[setupStatus]} ${setupError}`
+      : SETUP_STATUS_MESSAGES[setupStatus]
+    : null;
   const resourceWritesEnabled = Boolean(
     process.env.DASHBOARD_USERNAME && process.env.DASHBOARD_PASSWORD,
   );
@@ -82,6 +102,23 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
     storeError = error instanceof Error ? error.message : 'Could not read the comment store';
   }
 
+  let instagramMedia: InstagramMediaSummary[] = [];
+  let instagramMediaError: string | null = null;
+  if (config.accessToken) {
+    try {
+      instagramMedia = await listOwnMedia({
+        igAccountId: config.igAccountId,
+        accessToken: config.accessToken,
+        graphVersion: config.graphVersion,
+        limit: 25,
+      });
+    } catch (error) {
+      instagramMediaError =
+        error instanceof Error ? error.message : 'Could not load Instagram media';
+    }
+  }
+  const instagramMediaById = new Map(instagramMedia.map((media) => [media.id, media]));
+
   const dashboardResourcesByMedia = new Map(
     mediaResources.map((resource) => [resource.mediaId, resource]),
   );
@@ -90,6 +127,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
     commentCount: number;
     lastSeenAt: string | null;
     latestComment: CommentRecord | null;
+    instagramMedia: InstagramMediaSummary | null;
     dashboardResource: MediaResource | null;
     envUrl: string | null;
     effectiveUrl: string | null;
@@ -107,6 +145,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
       commentCount: 0,
       lastSeenAt: null,
       latestComment: null,
+      instagramMedia: instagramMediaById.get(mediaId) ?? null,
       dashboardResource,
       envUrl,
       effectiveUrl,
@@ -134,9 +173,10 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   }
   for (const mediaId of Object.keys(config.mediaLinks)) ensureReel(mediaId);
   for (const resource of mediaResources) ensureReel(resource.mediaId);
+  for (const media of instagramMedia) ensureReel(media.id);
   const reels = [...reelMap.values()].sort((a, b) => {
-    const aTime = a.lastSeenAt ?? a.dashboardResource?.updatedAt ?? '';
-    const bTime = b.lastSeenAt ?? b.dashboardResource?.updatedAt ?? '';
+    const aTime = a.lastSeenAt ?? a.instagramMedia?.timestamp ?? a.dashboardResource?.updatedAt ?? '';
+    const bTime = b.lastSeenAt ?? b.instagramMedia?.timestamp ?? b.dashboardResource?.updatedAt ?? '';
     return bTime.localeCompare(aTime);
   });
   const mappedReelCount = new Set([
@@ -181,6 +221,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
         <div className="banner banner-error">
           <strong>Storage error:</strong> {storeError}. Check <code>DATABASE_URL</code> (or the
           local data file) — without storage the app cannot deduplicate comments safely.
+        </div>
+      ) : null}
+
+      {setupStatusMessage ? (
+        <div className={setupStatus === 'subscribed' ? 'banner banner-warn' : 'banner banner-error'}>
+          {setupStatusMessage}
         </div>
       ) : null}
 
@@ -231,7 +277,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
         </div>
       </section>
 
-      <section className="card" aria-label="Setup checklist">
+      <section className="card" id="setup-checklist" aria-label="Setup checklist">
         <h2>Setup checklist</h2>
         <ul className="checklist">
           <li>
@@ -329,6 +375,25 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             </span>
           </li>
         </ul>
+
+        <form action={subscribeInstagramAccount} className="setup-action">
+          <div>
+            <strong>Instagram webhook account subscription</strong>
+            <div className="small muted">
+              Verifying the callback in Meta is app-level. Click this once to subscribe the
+              token’s Instagram account to <code>comments</code>, <code>messages</code>, and{' '}
+              <code>messaging_postbacks</code> so comment and button-tap events are delivered here.
+            </div>
+          </div>
+          <button
+            className="button button-primary"
+            type="submit"
+            disabled={!resourceWritesEnabled || !status.accessTokenConfigured}
+          >
+            Subscribe my account
+          </button>
+        </form>
+
         <div className="small muted" style={{ marginTop: 12 }}>
           {status.commentMatchMode === 'any' ? (
             <>Any-comment mode is on: the keyword list below is ignored unless you switch back.</>
@@ -346,9 +411,11 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
       <section className="card" id="reel-resources" aria-label="Reel resources">
         <h2>Reel resources</h2>
         <div className="small muted">
-          Add the resource link for each Reel/post here. It is saved in the database and used for
-          future comments on that media ID immediately — no Vercel env edit and no redeploy.
-          Dashboard mappings override the optional env fallback (<code>MEDIA_LINKS_JSON</code>).
+          Your recent Instagram Reels/posts are loaded from Instagram below, together with any
+          media seen in comments. Add each Reel’s resource link under it; it is saved in the
+          database and used for future comments on that media ID immediately — no Vercel env edit
+          and no redeploy. Dashboard mappings override the optional env fallback (
+          <code>MEDIA_LINKS_JSON</code>).
         </div>
 
         {resourceStatusMessage ? (
@@ -358,6 +425,18 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           <div className="resource-status resource-status-error">
             The optional <code>MEDIA_LINKS_JSON</code> / <code>DEFAULT_LINK_URL</code> env fallback is
             invalid. Dashboard mappings above still work; fix or remove the env value when convenient.
+          </div>
+        ) : null}
+        {instagramMediaError ? (
+          <div className="resource-status resource-status-error">
+            Couldn’t load your recent Instagram Reels/posts: {instagramMediaError}. Check that the
+            token belongs to the professional account and includes <code>instagram_business_basic</code>.
+            Comment-seen Reels and manual media-ID mapping below still work.
+          </div>
+        ) : null}
+        {!status.accessTokenConfigured ? (
+          <div className="resource-status resource-status-error">
+            Add <code>IG_ACCESS_TOKEN</code> to automatically list your recent Instagram Reels/posts here.
           </div>
         ) : null}
         {!resourceWritesEnabled ? (
@@ -406,26 +485,66 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
         {reels.length === 0 ? (
           <div className="empty">
-            <strong>No Reels seen yet</strong>
-            Once a comment arrives, its Reel/post appears here with a resource box underneath it.
-            You can also add a media ID manually with the form above.
+            <strong>No Reels/posts found yet</strong>
+            {status.accessTokenConfigured
+              ? 'Instagram returned no recent media for this token/account, and no comment media has been seen yet. Check the token account, or add a media ID manually above.'
+              : 'Add IG_ACCESS_TOKEN to load your recent Reels/posts automatically. Until then, a Reel appears here after its first comment webhook, or you can add its media ID manually above.'}
           </div>
         ) : (
           <div className="resource-list">
             {reels.map((reel) => (
               <article className="resource-item" key={reel.mediaId}>
                 <div className="resource-head">
-                  <div>
-                    <div className="resource-title">
-                      <span>{reel.dashboardResource?.label || 'Reel / post'}</span>
-                      <code>{reel.mediaId}</code>
-                    </div>
-                    <div className="small muted">
-                      {reel.commentCount} comment{reel.commentCount === 1 ? '' : 's'} in the last 50
-                      {reel.lastSeenAt ? ` · last seen ${formatTime(reel.lastSeenAt)}` : ''}
-                      {reel.latestComment
-                        ? ` · latest: “${reel.latestComment.text.slice(0, 90)}”${reel.latestComment.username ? ` by @${reel.latestComment.username}` : ''}`
-                        : ''}
+                  <div className="resource-media">
+                    {reel.instagramMedia?.thumbnailUrl ||
+                    (reel.instagramMedia?.mediaType !== 'VIDEO' ? reel.instagramMedia?.mediaUrl : null) ? (
+                      // Instagram returns short-lived CDN URLs; a plain img avoids
+                      // needing to allowlist their changing image hosts.
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        className="resource-thumb"
+                        src={
+                          reel.instagramMedia?.thumbnailUrl ??
+                          (reel.instagramMedia?.mediaType !== 'VIDEO'
+                            ? reel.instagramMedia?.mediaUrl ?? ''
+                            : '')
+                        }
+                        alt=""
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="resource-thumb resource-thumb-empty" aria-hidden="true">▶</div>
+                    )}
+                    <div>
+                      <div className="resource-title">
+                        <span>
+                          {reel.dashboardResource?.label ||
+                            (reel.instagramMedia?.mediaType === 'VIDEO'
+                              ? 'Reel / video'
+                              : reel.instagramMedia?.mediaType || 'Reel / post')}
+                        </span>
+                        <code>{reel.mediaId}</code>
+                      </div>
+                      <div className="small muted">
+                        {reel.instagramMedia?.timestamp
+                          ? `Published ${formatTime(reel.instagramMedia.timestamp)} · `
+                          : ''}
+                        {reel.commentCount} comment{reel.commentCount === 1 ? '' : 's'} in the last 50
+                        {reel.lastSeenAt ? ` · last seen ${formatTime(reel.lastSeenAt)}` : ''}
+                        {typeof reel.instagramMedia?.commentsCount === 'number'
+                          ? ` · ${reel.instagramMedia.commentsCount} Instagram comments`
+                          : ''}
+                        {reel.latestComment
+                          ? ` · latest: “${reel.latestComment.text.slice(0, 90)}”${reel.latestComment.username ? ` by @${reel.latestComment.username}` : ''}`
+                          : ''}
+                      </div>
+                      {reel.instagramMedia?.permalink ? (
+                        <div className="small resource-current">
+                          <a href={reel.instagramMedia.permalink} target="_blank" rel="noreferrer">
+                            Open this Reel/post on Instagram ↗
+                          </a>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                   <span

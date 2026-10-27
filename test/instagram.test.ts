@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   getUserFollowStatus,
   InstagramApiError,
+  listOwnMedia,
   sendMessageToUser,
   sendPrivateReply,
+  subscribeInstagramWebhooks,
 } from '../lib/instagram';
 
 describe('sendPrivateReply', () => {
@@ -193,5 +195,89 @@ describe('two-step message payloads', () => {
       recipient: { id: 'user-9' },
       message: { text: 'Here is your link: https://example.com' },
     });
+  });
+});
+
+
+describe('dashboard Instagram helpers', () => {
+  it('lists the token account media with display fields and no token in the URL', async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: 'media-1',
+              media_type: 'VIDEO',
+              media_url: 'https://cdn.example/reel.mp4',
+              thumbnail_url: 'https://cdn.example/reel.jpg',
+              permalink: 'https://www.instagram.com/reel/abc/',
+              timestamp: '2026-10-20T10:00:00+0000',
+              username: 'alice',
+              comments_count: 4,
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const media = await listOwnMedia({
+      accessToken: 'secret-token',
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(media).toMatchObject([
+      {
+        id: 'media-1',
+        mediaType: 'VIDEO',
+        thumbnailUrl: 'https://cdn.example/reel.jpg',
+        permalink: 'https://www.instagram.com/reel/abc/',
+        commentsCount: 4,
+      },
+    ]);
+    const [url, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain('https://graph.instagram.com/v25.0/me/media?');
+    expect(url).not.toContain('secret-token');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer secret-token');
+  });
+
+  it('falls back to a smaller media field set when optional fields are rejected', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'field error', code: 100 } }), {
+          status: 400,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: 'media-2', media_type: 'VIDEO' }] }), {
+          status: 200,
+        }),
+      );
+
+    await expect(
+      listOwnMedia({
+        accessToken: 'secret-token',
+        fetchFn: fetchFn as unknown as typeof fetch,
+      }),
+    ).resolves.toMatchObject([{ id: 'media-2', mediaType: 'VIDEO' }]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('subscribes the account to comment and messaging webhooks', async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ success: true }), { status: 200 }),
+    );
+
+    await subscribeInstagramWebhooks({
+      accessToken: 'secret-token',
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+
+    const [url, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain('https://graph.instagram.com/v25.0/me/subscribed_apps?');
+    expect(decodeURIComponent(url)).toContain('comments,messages,messaging_postbacks');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer secret-token');
   });
 });

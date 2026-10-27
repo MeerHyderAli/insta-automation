@@ -230,3 +230,211 @@ export async function getUserFollowStatus(
     error: 'Instagram profile API did not return is_user_follow_business as a boolean',
   };
 }
+
+
+export interface InstagramMediaSummary {
+  id: string;
+  mediaType: string | null;
+  mediaUrl: string | null;
+  thumbnailUrl: string | null;
+  permalink: string | null;
+  shortcode: string | null;
+  timestamp: string | null;
+  username: string | null;
+  commentsCount: number | null;
+  likeCount: number | null;
+}
+
+export interface ListOwnMediaInput {
+  /** Professional account id, or "me" for the token's account. */
+  igAccountId?: string | null;
+  accessToken: string;
+  graphVersion?: string;
+  limit?: number;
+  fetchFn?: typeof fetch;
+  timeoutMs?: number;
+}
+
+function apiErrorMessage(
+  payload: Record<string, unknown>,
+  status: number,
+  token: string,
+  prefix: string,
+): string {
+  const errorObj =
+    typeof payload.error === 'object' && payload.error !== null
+      ? (payload.error as Record<string, unknown>)
+      : {};
+  const apiMessage =
+    typeof errorObj.message === 'string' ? errorObj.message : `HTTP ${status}`;
+  const code = typeof errorObj.code === 'number' ? errorObj.code : undefined;
+  return redact(`${prefix}${code ? ` ${code}` : ''}: ${apiMessage}`, token).slice(0, 300);
+}
+
+function asOptionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0
+    ? value
+    : typeof value === 'number'
+      ? String(value)
+      : null;
+}
+
+function asOptionalNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+async function readJsonResponse(response: Response): Promise<Record<string, unknown>> {
+  const rawText = await response.text();
+  try {
+    const parsed = JSON.parse(rawText) as unknown;
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Lists recent media owned by the token's Instagram professional account.
+ * The dashboard uses this to show Reels/posts (with media IDs) before any
+ * comment webhook has arrived, so resources can be mapped in advance.
+ */
+export async function listOwnMedia(input: ListOwnMediaInput): Promise<InstagramMediaSummary[]> {
+  const version = normalizeGraphVersion(input.graphVersion);
+  const accountId = encodeURIComponent(input.igAccountId?.trim() || 'me');
+  const limit = Math.min(50, Math.max(1, Math.trunc(input.limit ?? 25)));
+  const fetchFn = input.fetchFn ?? fetch;
+  const fieldSets = [
+    'id,comments_count,like_count,media_type,media_url,permalink,shortcode,thumbnail_url,timestamp,username',
+    'id,media_type,media_url,permalink,thumbnail_url,timestamp',
+    'id,media_type,timestamp',
+  ];
+
+  let lastError: InstagramApiError | null = null;
+  for (const fields of fieldSets) {
+    const params = new URLSearchParams({ fields, limit: String(limit) });
+    const url = `https://graph.instagram.com/${version}/${accountId}/media?${params}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? 15_000);
+    let response: Response;
+    try {
+      response = await fetchFn(url, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${input.accessToken}` },
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw new InstagramApiError(
+        error instanceof Error && error.name === 'AbortError'
+          ? 'Instagram media API request timed out'
+          : 'Could not reach the Instagram media API',
+        0,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const payload = await readJsonResponse(response);
+    if (!response.ok) {
+      const code =
+        typeof (payload.error as Record<string, unknown> | undefined)?.code === 'number'
+          ? ((payload.error as Record<string, unknown>).code as number)
+          : undefined;
+      lastError = new InstagramApiError(
+        apiErrorMessage(payload, response.status, input.accessToken, 'Instagram media API error'),
+        response.status,
+        code,
+      );
+      // A reduced field set can succeed if this login type/app version does
+      // not expose one of the optional display fields above. Other errors
+      // (notably an invalid/expired token) will fail the same way, so stop.
+      if (code !== 100) throw lastError;
+      continue;
+    }
+
+    const data = Array.isArray(payload.data) ? payload.data : [];
+    return data.flatMap((raw) => {
+      if (typeof raw !== 'object' || raw === null) return [];
+      const item = raw as Record<string, unknown>;
+      const id = asOptionalString(item.id);
+      if (!id) return [];
+      return [
+        {
+          id,
+          mediaType: asOptionalString(item.media_type),
+          mediaUrl: asOptionalString(item.media_url),
+          thumbnailUrl: asOptionalString(item.thumbnail_url),
+          permalink: asOptionalString(item.permalink),
+          shortcode: asOptionalString(item.shortcode),
+          timestamp: asOptionalString(item.timestamp),
+          username: asOptionalString(item.username),
+          commentsCount: asOptionalNumber(item.comments_count),
+          likeCount: asOptionalNumber(item.like_count),
+        },
+      ];
+    });
+  }
+
+  throw lastError ?? new InstagramApiError('Instagram media API returned no usable response', 0);
+}
+
+export interface SubscribeInstagramWebhooksInput {
+  accessToken: string;
+  graphVersion?: string;
+  fetchFn?: typeof fetch;
+  timeoutMs?: number;
+}
+
+/**
+ * Subscribes the token's Instagram professional account to this app's
+ * comment/message webhooks. This is the account-level companion to the
+ * app-level callback configured in the Meta dashboard.
+ */
+export async function subscribeInstagramWebhooks(
+  input: SubscribeInstagramWebhooksInput,
+): Promise<void> {
+  const version = normalizeGraphVersion(input.graphVersion);
+  const params = new URLSearchParams({
+    subscribed_fields: 'comments,messages,messaging_postbacks',
+  });
+  const url = `https://graph.instagram.com/${version}/me/subscribed_apps?${params}`;
+  const fetchFn = input.fetchFn ?? fetch;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? 15_000);
+
+  let response: Response;
+  try {
+    response = await fetchFn(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${input.accessToken}` },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw new InstagramApiError(
+      error instanceof Error && error.name === 'AbortError'
+        ? 'Instagram webhook subscription request timed out'
+        : 'Could not reach the Instagram webhook subscription API',
+      0,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const payload = await readJsonResponse(response);
+  if (!response.ok || payload.success !== true) {
+    throw new InstagramApiError(
+      apiErrorMessage(
+        payload,
+        response.status,
+        input.accessToken,
+        'Instagram webhook subscription error',
+      ),
+      response.status,
+      typeof (payload.error as Record<string, unknown> | undefined)?.code === 'number'
+        ? ((payload.error as Record<string, unknown>).code as number)
+        : undefined,
+    );
+  }
+}

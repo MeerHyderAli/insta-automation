@@ -13,9 +13,10 @@ keywords or **any non-empty comment**.
 - Two trigger modes: case-insensitive, whole-word keywords (including your
   typo variants), or **any non-empty comment** (`COMMENT_MATCH_MODE=any`).
 - **Different links per Reel/post, managed in the dashboard:** the
-  dashboard's **Reel resources** section lists each media id seen in
-  comments; paste that Reel's resource URL once and it is saved in the
-  database for future comments — no env edit or redeploy. `MEDIA_LINKS_JSON`
+  dashboard loads your recent Instagram media through the official IG User
+  media endpoint and also lists any media id seen in comments. Find the
+  Reel/post by its thumbnail/permalink, paste its resource URL once, and it
+  is saved in the database for future comments — no env edit or redeploy. `MEDIA_LINKS_JSON`
   remains an optional env fallback. The button payload identifies the exact
   comment, so pending prompts from different Reels cannot deliver each
   other's links.
@@ -185,8 +186,10 @@ Under **Instagram → API setup with Instagram login**:
 
 ### Step 6 — Subscribe your account to the app's webhooks (easy to miss!)
 
-Creating the webhook in the dashboard is not enough: your Instagram
-account must be subscribed to the app. One-time call:
+Creating the webhook in the Meta dashboard is not enough: your Instagram
+account must be subscribed to the app. Easiest: open this app's dashboard
+and click **Subscribe my account** in the setup checklist. Or make the same
+one-time call locally:
 
 ```bash
 # with IG_ACCESS_TOKEN set in .env.local:
@@ -205,14 +208,14 @@ This runs
    This matters because Meta grants profile-access consent when a user
    messages the account; a comment alone may leave follow status
    unverifiable.
-2. From that second account, comment on one of your posts/Reels — your
-   keyword in keywords mode, or anything in any-comment mode. (Commenting
-   from your own account is recorded as "Own comment" and never DMs you.)
-   That Reel/post then appears in the dashboard's **Reel resources**
-   section: paste its resource URL under its media id and click **Save
-   resource** (no env edit or redeploy). Before it is mapped, an unmapped
-   Reel fails closed with “No link configured for media …” and nobody is
-   prompted, so map it and comment again for the full public test.
+2. In this app's **Reel resources** section, find the Reel/post you will
+   test (recent Instagram media is listed automatically), paste its
+   resource URL under it, and click **Save resource** (no env edit or
+   redeploy). Then, from the second account, comment on it — your keyword in
+   keywords mode, or anything in any-comment mode. (Commenting from your own
+   account is recorded as "Own comment" and never DMs you.) An unmapped Reel
+   fails closed with “No link configured for media …” and nobody is prompted,
+   so map it before the full public test.
 3. The commenter should receive **only** the “Thanks for commenting”
    prompt with a **Click to get link** button — no link yet. Tap it: the app
    checks the follow a second time and then sends the link. The dashboard
@@ -371,8 +374,9 @@ Files:
 | Symptom | Likely cause |
 |---|---|
 | "Verify and save" fails in Meta | App not deployed yet; wrong callback URL (must be `https://YOUR-DOMAIN/api/webhook`); verify token mismatch with `META_WEBHOOK_VERIFY_TOKEN`. |
-| No events arrive | `comments` field not subscribed; `npm run ig:subscribe` not run; account is private/personal; token was generated before adding the comment/message permissions (regenerate it). |
-| Prompt arrives but tapping the button does nothing | `messages` / `messaging_postbacks` webhook fields not subscribed (dashboard + `npm run ig:subscribe`); check the dashboard row — `follow_prompt_sent` means check #2 returned false/unverified, so follow and tap **Try again**. |
+| Reels don't appear in the dashboard | `IG_ACCESS_TOKEN` missing, token belongs to another account, or it lacks `instagram_business_basic`. The Reel resources section shows Instagram's error; regenerate the token for the professional account with the basic permission. Comment-seen media and manual media-ID mapping still work. |
+| No events arrive | `comments` field not subscribed in Meta; account subscription not done (dashboard **Subscribe my account** or `npm run ig:subscribe`); account is private/personal; token was generated before adding the comment/message permissions (regenerate it). |
+| Prompt arrives but tapping the button does nothing | `messages` / `messaging_postbacks` webhook fields not subscribed in Meta, or the account subscription above was not run; check the dashboard row — `follow_prompt_sent` means check #2 returned false/unverified, so follow and tap **Try again**. |
 | `403 Invalid signature` in logs | `META_APP_SECRET` doesn't match the app that sends the webhooks. |
 | DM status `failed` + code 190 / 463 | Token expired/invalid — refresh or regenerate, update env, redeploy. |
 | DM status `failed` + permission error | Token lacks `instagram_business_manage_messages` — add the permission, regenerate the token. |
