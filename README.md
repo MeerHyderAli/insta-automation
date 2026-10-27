@@ -31,7 +31,9 @@ keywords or **any non-empty comment**.
 - The access token is read from an environment variable, server-side only —
   never hardcoded, never sent to the browser.
 - A dashboard page lists the **last 50 comments** with the latest follow
-  result and stage (prompt sent, waiting for tap, link sent, skipped, …).
+  result and stage (prompt sent, waiting for tap, link sent, skipped, …),
+  plus metadata-only **Webhook diagnostics** for the last five signed POST
+  attempts (signature result, object/field names, and parsed counts).
 
 No scraping, no unofficial endpoints, no password login, no public replies —
 just the documented private-reply, quick-reply, and messaging flows.
@@ -375,7 +377,7 @@ Files:
 |---|---|
 | "Verify and save" fails in Meta | App not deployed yet; wrong callback URL (must be `https://YOUR-DOMAIN/api/webhook`); verify token mismatch with `META_WEBHOOK_VERIFY_TOKEN`. |
 | Reels don't appear in the dashboard | `IG_ACCESS_TOKEN` missing, token belongs to another account, or it lacks `instagram_business_basic`. The Reel resources section shows Instagram's error; regenerate the token for the professional account with the basic permission. Comment-seen media and manual media-ID mapping still work. |
-| No events arrive | `comments` field not subscribed in Meta; account subscription not done (dashboard **Subscribe my account** or `npm run ig:subscribe`); account is private/personal; token was generated before adding the comment/message permissions (regenerate it). |
+| No events arrive | First check **Webhook diagnostics** after one new comment. No receipt means Meta has not POSTed to this deployment since diagnostics were enabled: `comments` field/account subscription missing, the Meta app is not Published/Live or lacks the access level Meta requires for comment notifications, or the media-owner account is private/personal. An **Invalid signature** receipt means `META_APP_SECRET` does not match the sending Meta app. A **Processed** receipt with `0 comments` means a valid webhook arrived but parsed to no comment events—compare its field list with the parser/tests. |
 | Prompt arrives but tapping the button does nothing | `messages` / `messaging_postbacks` webhook fields not subscribed in Meta, or the account subscription above was not run; check the dashboard row — `follow_prompt_sent` means check #2 returned false/unverified, so follow and tap **Try again**. |
 | `403 Invalid signature` in logs | `META_APP_SECRET` doesn't match the app that sends the webhooks. |
 | DM status `failed` + code 190 / 463 | Token expired/invalid — refresh or regenerate, update env, redeploy. |

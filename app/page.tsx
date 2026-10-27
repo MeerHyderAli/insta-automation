@@ -1,7 +1,14 @@
 import { getConfig, getConfigStatus } from '../lib/config';
 import { listOwnMedia, type InstagramMediaSummary } from '../lib/instagram';
 import { getStore } from '../lib/store';
-import type { CommentRecord, DmStatus, FollowStatus, MediaResource } from '../lib/types';
+import type {
+  CommentRecord,
+  DmStatus,
+  FollowStatus,
+  MediaResource,
+  WebhookReceipt,
+  WebhookReceiptStatus,
+} from '../lib/types';
 import { deleteMediaResource, saveMediaResource, subscribeInstagramAccount } from './actions';
 
 export const runtime = 'nodejs';
@@ -29,6 +36,41 @@ const FOLLOW_LABEL: Record<FollowStatus, string> = {
   unverified: 'Could not verify',
   not_checked: 'Not checked',
 };
+
+const WEBHOOK_RECEIPT_LABEL: Record<WebhookReceiptStatus, string> = {
+  processed: 'Processed',
+  invalid_signature: 'Invalid signature',
+  invalid_json: 'Invalid JSON',
+  ignored_non_instagram: 'Ignored — not Instagram',
+  processing_failed: 'Processing failed',
+};
+
+function webhookReceiptPillClass(status: WebhookReceiptStatus): string {
+  if (status === 'processed') return 'pill-link_sent';
+  if (status === 'ignored_non_instagram') return 'pill-not_matched';
+  return 'pill-failed';
+}
+
+function webhookReceiptGuidance(receipt: WebhookReceipt): string {
+  switch (receipt.status) {
+    case 'invalid_signature':
+      return 'Meta reached this endpoint, but the payload signature failed. META_APP_SECRET in Vercel probably does not match the Meta app that sent it.';
+    case 'invalid_json':
+      return 'A signed request reached this endpoint, but its body was not valid JSON.';
+    case 'ignored_non_instagram':
+      return 'A signed webhook reached this endpoint, but it was not an Instagram-object payload.';
+    case 'processing_failed':
+      return 'A valid Instagram webhook reached this endpoint, but processing/storage failed. Check the server logs and database connection.';
+    case 'processed':
+      if (receipt.parsedComments > 0) {
+        return 'Comment events were parsed. Inspect the corresponding row in Last 50 comments for the follow-check or DM result.';
+      }
+      if (receipt.parsedMessages > 0) {
+        return 'Messaging events were parsed, but this receipt contained no comment event.';
+      }
+      return 'A valid signed Instagram webhook reached this app, but it parsed to zero comments/messages. Check the fields on this receipt.';
+  }
+}
 
 function formatTime(iso: string): string {
   const date = new Date(iso);
@@ -94,10 +136,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const store = getStore(config);
   let records: CommentRecord[] = [];
   let mediaResources: MediaResource[] = [];
+  let webhookReceipts: WebhookReceipt[] = [];
   let storeError: string | null = null;
   try {
     records = await store.list(50);
     mediaResources = await store.listMediaResources();
+    webhookReceipts = await store.listWebhookReceipts(5);
   } catch (error) {
     storeError = error instanceof Error ? error.message : 'Could not read the comment store';
   }
@@ -408,6 +452,84 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
         </div>
       </section>
 
+      <section className="card" id="webhook-diagnostics" aria-label="Webhook diagnostics">
+        <h2>Webhook diagnostics</h2>
+        <div className="small muted">
+          The last five signed webhook POST attempts received by this deployment. This records
+          only delivery metadata—time, signature result, payload object/field names, and parsed
+          counts—not the raw payload or comment text.
+        </div>
+
+        {webhookReceipts[0] ? (
+          <div
+            className={
+              webhookReceipts[0].status === 'processed'
+                ? 'resource-status'
+                : 'resource-status resource-status-error'
+            }
+          >
+            <strong>Latest webhook:</strong> {formatTime(webhookReceipts[0].receivedAt)} —{' '}
+            {WEBHOOK_RECEIPT_LABEL[webhookReceipts[0].status]}.{' '}
+            {webhookReceiptGuidance(webhookReceipts[0])}
+          </div>
+        ) : (
+          <div className="resource-status resource-status-error">
+            <strong>No webhook POST has been recorded since diagnostics were enabled.</strong>{' '}
+            Click <strong>Subscribe my account</strong> above, make one brand-new comment, then
+            refresh. If this remains empty, Meta is not delivering to{' '}
+            <code>/api/webhook</code>—check the Meta app’s Instagram webhook fields, account
+            subscription, and Published/Live + Advanced Access requirements.
+          </div>
+        )}
+
+        {webhookReceipts.length > 0 ? (
+          <div className="table-wrap" style={{ marginTop: 12 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Received</th>
+                  <th>Status</th>
+                  <th>Object / fields</th>
+                  <th>Parsed</th>
+                  <th>Result / detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {webhookReceipts.map((receipt) => (
+                  <tr key={receipt.id}>
+                    <td className="nowrap muted">{formatTime(receipt.receivedAt)}</td>
+                    <td>
+                      <span className={`pill ${webhookReceiptPillClass(receipt.status)}`}>
+                        {WEBHOOK_RECEIPT_LABEL[receipt.status]}
+                      </span>
+                      <div className="small muted">HTTP {receipt.httpStatus}</div>
+                    </td>
+                    <td>
+                      <code>{receipt.payloadObject ?? 'unknown'}</code>
+                      <div className="small muted">
+                        {receipt.entryCount} entr{receipt.entryCount === 1 ? 'y' : 'ies'}
+                        {receipt.entryFields.length
+                          ? ` · ${receipt.entryFields.join(', ')}`
+                          : ' · no fields detected'}
+                      </div>
+                    </td>
+                    <td className="nowrap">
+                      {receipt.parsedComments} comment{receipt.parsedComments === 1 ? '' : 's'}
+                      <div className="small muted">
+                        {receipt.parsedMessages} message{receipt.parsedMessages === 1 ? '' : 's'}
+                      </div>
+                    </td>
+                    <td className="small muted comment-text">
+                      {receipt.error ?? receipt.resultSummary ?? '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </section>
+
       <section className="card" id="reel-resources" aria-label="Reel resources">
         <h2>Reel resources</h2>
         <div className="small muted">
@@ -631,7 +753,9 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
         {records.length === 0 ? (
           <div className="table-wrap empty">
             <strong>No comments yet</strong>
-            Once your webhook is connected, comments appear here. To try it locally right now,
+            Once your webhook is connected, comments appear here. Check{' '}
+            <a href="#webhook-diagnostics">Webhook diagnostics</a> above to see whether Meta
+            reached this app. To try it locally right now,
             run <code>npm run simulate -- &quot;LINK please!&quot;</code> in a second terminal —
             that sends a signed fake webhook to this app (labelled simulation, not a real
             Instagram event).

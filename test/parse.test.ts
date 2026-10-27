@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { isInstagramWebhook, parseCommentEvents, parseMessageEvents } from '../lib/parse';
+import {
+  isInstagramWebhook,
+  parseCommentEvents,
+  parseMessageEvents,
+  summarizeWebhookPayload,
+} from '../lib/parse';
 
 describe('parseCommentEvents', () => {
   it('extracts comment events and ignores other fields', () => {
@@ -80,6 +85,33 @@ describe('parseCommentEvents', () => {
   it('identifies the instagram object', () => {
     expect(isInstagramWebhook({ object: 'instagram' })).toBe(true);
     expect(isInstagramWebhook({ object: 'page' })).toBe(false);
+  });
+
+  it('summarizes webhook shape without exposing payload values', () => {
+    const payload = {
+      object: 'instagram',
+      entry: [
+        {
+          id: 'ig-1',
+          field: 'comments',
+          value: { id: 'comment-1', text: 'do not expose this' },
+          messaging: [{ sender: { id: 'user-9' }, message: { mid: 'm1', text: 'private' } }],
+        },
+        {
+          id: 'ig-1',
+          changes: [{ field: 'live_comments', value: { id: 'comment-2' } }],
+        },
+      ],
+    };
+
+    const summary = summarizeWebhookPayload(payload);
+    expect(summary).toEqual({
+      payloadObject: 'instagram',
+      entryCount: 2,
+      entryFields: ['comments', 'live_comments', 'messages'],
+    });
+    expect(JSON.stringify(summary)).not.toContain('do not expose this');
+    expect(JSON.stringify(summary)).not.toContain('user-9');
   });
 });
 

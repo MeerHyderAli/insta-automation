@@ -111,3 +111,35 @@ export interface MessageProcessSummary {
   failed: number;
   dryRun: number;
 }
+
+/** Safe, high-level shape summary of a webhook payload (never raw user data). */
+export interface WebhookPayloadSummary {
+  payloadObject: string | null;
+  entryCount: number;
+  entryFields: string[];
+}
+
+export type WebhookReceiptStatus =
+  | 'processed'
+  | 'invalid_signature'
+  | 'invalid_json'
+  | 'ignored_non_instagram'
+  | 'processing_failed';
+
+/**
+ * One diagnostic receipt for a webhook POST attempt. It intentionally stores
+ * only delivery/parsing metadata, not the raw payload, comment text,
+ * usernames, signatures, or secrets.
+ */
+export interface WebhookReceipt extends WebhookPayloadSummary {
+  id: string;
+  /** ISO-8601 */
+  receivedAt: string;
+  status: WebhookReceiptStatus;
+  httpStatus: number;
+  signaturePresent: boolean;
+  parsedComments: number;
+  parsedMessages: number;
+  resultSummary: string | null;
+  error: string | null;
+}

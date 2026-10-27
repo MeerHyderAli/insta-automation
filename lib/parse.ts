@@ -1,4 +1,4 @@
-import type { ParsedComment, ParsedMessageEvent } from './types';
+import type { ParsedComment, ParsedMessageEvent, WebhookPayloadSummary } from './types';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -36,6 +36,49 @@ function rootRecords(payload: unknown): UnknownRecord[] {
 
 export function isInstagramWebhook(payload: unknown): boolean {
   return rootRecords(payload).some((root) => root.object === 'instagram');
+}
+
+/**
+ * Returns only the payload's delivery shape for dashboard diagnostics:
+ * object name, number of entries, and field names. It deliberately does not
+ * return IDs, usernames, message/comment text, or any raw payload content.
+ */
+export function summarizeWebhookPayload(payload: unknown): WebhookPayloadSummary {
+  const roots = rootRecords(payload);
+  const fields = new Set<string>();
+  let entryCount = 0;
+
+  for (const root of roots) {
+    const entries = Array.isArray(root.entry) ? root.entry : [];
+    for (const rawEntry of entries) {
+      const entry = asRecord(rawEntry);
+      if (!entry) continue;
+      entryCount += 1;
+
+      const directField = asString(entry.field);
+      if (directField) fields.add(directField);
+
+      const changes = Array.isArray(entry.changes) ? entry.changes : [];
+      for (const rawChange of changes) {
+        const field = asString(asRecord(rawChange)?.field);
+        if (field) fields.add(field);
+      }
+
+      const messaging = Array.isArray(entry.messaging) ? entry.messaging : [];
+      for (const rawEvent of messaging) {
+        const event = asRecord(rawEvent);
+        if (!event) continue;
+        if (asRecord(event.message)) fields.add('messages');
+        if (asRecord(event.postback)) fields.add('messaging_postbacks');
+      }
+    }
+  }
+
+  return {
+    payloadObject: roots.map((root) => asString(root.object)).find(Boolean) ?? null,
+    entryCount,
+    entryFields: [...fields].sort(),
+  };
 }
 
 /**

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import type { AppConfig } from './config';
 import { getConfig } from './config';
-import type { CommentPatch, CommentRecord, MediaResource } from './types';
+import type { CommentPatch, CommentRecord, MediaResource, WebhookReceipt } from './types';
 
 /**
  * Durable record of every comment we have seen.
@@ -35,6 +35,8 @@ export interface CommentStore {
     label: string | null;
   }): Promise<MediaResource>;
   deleteMediaResource(mediaId: string): Promise<void>;
+  recordWebhookReceipt(receipt: WebhookReceipt): Promise<void>;
+  listWebhookReceipts(limit: number): Promise<WebhookReceipt[]>;
 }
 
 const PENDING_DM_STATUSES = new Set(['prompt_sent', 'follow_prompt_sent']);
@@ -136,6 +138,61 @@ export class FileCommentStore implements CommentStore {
     const tmpPath = `${this.resourcesFilePath}.${process.pid}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(resources, null, 2), 'utf8');
     await fs.rename(tmpPath, this.resourcesFilePath);
+  }
+
+  private get webhookReceiptsFilePath(): string {
+    return this.filePath.endsWith('.json')
+      ? `${this.filePath.slice(0, -'.json'.length)}.webhooks.json`
+      : `${this.filePath}.webhooks.json`;
+  }
+
+  private async readWebhookReceipts(): Promise<WebhookReceipt[]> {
+    let raw: string;
+    try {
+      raw = await fs.readFile(this.webhookReceiptsFilePath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(
+        `Webhook receipt store file is corrupted (invalid JSON): ${this.webhookReceiptsFilePath}`,
+      );
+    }
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as Array<Partial<WebhookReceipt>>).flatMap((receipt, index) => {
+      if (!receipt.status || !receipt.receivedAt) return [];
+      return [
+        {
+          id: receipt.id ? String(receipt.id) : `legacy-${index}`,
+          receivedAt: String(receipt.receivedAt),
+          status: receipt.status,
+          httpStatus: typeof receipt.httpStatus === 'number' ? receipt.httpStatus : 0,
+          signaturePresent: receipt.signaturePresent === true,
+          payloadObject: receipt.payloadObject ? String(receipt.payloadObject) : null,
+          entryCount: typeof receipt.entryCount === 'number' ? receipt.entryCount : 0,
+          entryFields: Array.isArray(receipt.entryFields)
+            ? receipt.entryFields.map(String)
+            : [],
+          parsedComments:
+            typeof receipt.parsedComments === 'number' ? receipt.parsedComments : 0,
+          parsedMessages:
+            typeof receipt.parsedMessages === 'number' ? receipt.parsedMessages : 0,
+          resultSummary: receipt.resultSummary ? String(receipt.resultSummary) : null,
+          error: receipt.error ? String(receipt.error) : null,
+        },
+      ];
+    });
+  }
+
+  private async writeWebhookReceipts(receipts: WebhookReceipt[]): Promise<void> {
+    await fs.mkdir(path.dirname(this.webhookReceiptsFilePath), { recursive: true });
+    const tmpPath = `${this.webhookReceiptsFilePath}.${process.pid}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(receipts, null, 2), 'utf8');
+    await fs.rename(tmpPath, this.webhookReceiptsFilePath);
   }
 
   tryClaim(record: CommentRecord): Promise<boolean> {
@@ -254,6 +311,24 @@ export class FileCommentStore implements CommentStore {
       await this.writeResources(resources.filter((resource) => resource.mediaId !== mediaId));
     });
   }
+
+  recordWebhookReceipt(receipt: WebhookReceipt): Promise<void> {
+    return this.run(async () => {
+      const receipts = await this.readWebhookReceipts();
+      receipts.push(receipt);
+      const trimmed = receipts
+        .sort((a, b) => a.receivedAt.localeCompare(b.receivedAt))
+        .slice(-100);
+      await this.writeWebhookReceipts(trimmed);
+    });
+  }
+
+  async listWebhookReceipts(limit: number): Promise<WebhookReceipt[]> {
+    const receipts = await this.readWebhookReceipts();
+    return receipts
+      .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt))
+      .slice(0, Math.max(0, limit));
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -298,6 +373,48 @@ function mapPgRow(row: PgRow): CommentRecord {
     error: row.error,
     receivedAt:
       row.received_at instanceof Date ? row.received_at.toISOString() : String(row.received_at),
+  };
+}
+
+interface PgWebhookReceiptRow {
+  id: string;
+  received_at: Date | string;
+  status: WebhookReceipt['status'];
+  http_status: number;
+  signature_present: boolean;
+  payload_object: string | null;
+  entry_count: number;
+  entry_fields: string;
+  parsed_comments: number;
+  parsed_messages: number;
+  result_summary: string | null;
+  error: string | null;
+}
+
+function parseEntryFields(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function mapWebhookReceiptRow(row: PgWebhookReceiptRow): WebhookReceipt {
+  return {
+    id: row.id,
+    receivedAt:
+      row.received_at instanceof Date ? row.received_at.toISOString() : String(row.received_at),
+    status: row.status,
+    httpStatus: row.http_status,
+    signaturePresent: row.signature_present,
+    payloadObject: row.payload_object,
+    entryCount: row.entry_count,
+    entryFields: parseEntryFields(row.entry_fields),
+    parsedComments: row.parsed_comments,
+    parsedMessages: row.parsed_messages,
+    resultSummary: row.result_summary,
+    error: row.error,
   };
 }
 
@@ -346,7 +463,23 @@ export class PostgresCommentStore implements CommentStore {
              url        TEXT NOT NULL,
              label      TEXT,
              updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-           );`,
+           );
+           CREATE TABLE IF NOT EXISTS webhook_receipts (
+             id                TEXT PRIMARY KEY,
+             received_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+             status            TEXT NOT NULL,
+             http_status       INTEGER NOT NULL,
+             signature_present BOOLEAN NOT NULL,
+             payload_object    TEXT,
+             entry_count       INTEGER NOT NULL,
+             entry_fields      TEXT NOT NULL,
+             parsed_comments   INTEGER NOT NULL,
+             parsed_messages   INTEGER NOT NULL,
+             result_summary    TEXT,
+             error             TEXT
+           );
+           CREATE INDEX IF NOT EXISTS webhook_receipts_received_at_idx
+             ON webhook_receipts (received_at DESC);`,
         )
         .then(() => undefined);
     }
@@ -526,6 +659,50 @@ export class PostgresCommentStore implements CommentStore {
   async deleteMediaResource(mediaId: string): Promise<void> {
     await this.ensureSchema();
     await this.pool.query(`DELETE FROM media_resources WHERE media_id = $1`, [mediaId]);
+  }
+
+  async recordWebhookReceipt(receipt: WebhookReceipt): Promise<void> {
+    await this.ensureSchema();
+    await this.pool.query(
+      `INSERT INTO webhook_receipts
+         (id, received_at, status, http_status, signature_present, payload_object,
+          entry_count, entry_fields, parsed_comments, parsed_messages, result_summary, error)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        receipt.id,
+        receipt.receivedAt,
+        receipt.status,
+        receipt.httpStatus,
+        receipt.signaturePresent,
+        receipt.payloadObject,
+        receipt.entryCount,
+        JSON.stringify(receipt.entryFields),
+        receipt.parsedComments,
+        receipt.parsedMessages,
+        receipt.resultSummary,
+        receipt.error,
+      ],
+    );
+    await this.pool.query(
+      `DELETE FROM webhook_receipts
+        WHERE id NOT IN (
+          SELECT id FROM webhook_receipts ORDER BY received_at DESC LIMIT 100
+        )`,
+    );
+  }
+
+  async listWebhookReceipts(limit: number): Promise<WebhookReceipt[]> {
+    await this.ensureSchema();
+    const result = await this.pool.query<PgWebhookReceiptRow>(
+      `SELECT id, received_at, status, http_status, signature_present, payload_object,
+              entry_count, entry_fields, parsed_comments, parsed_messages, result_summary, error
+         FROM webhook_receipts
+        ORDER BY received_at DESC
+        LIMIT $1`,
+      [Math.max(0, limit)],
+    );
+    return result.rows.map(mapWebhookReceiptRow);
   }
 
   async tryClaimClick(commentId: string, eventId: string): Promise<CommentRecord | null> {

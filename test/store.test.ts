@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FileCommentStore } from '../lib/store';
-import type { CommentRecord } from '../lib/types';
+import type { CommentRecord, WebhookReceipt } from '../lib/types';
 
 function makeRecord(commentId: string, receivedAt: string): CommentRecord {
   return {
@@ -94,5 +94,36 @@ describe('FileCommentStore dashboard media resources', () => {
 
     await reloaded.deleteMediaResource('media-1');
     expect(await reloaded.getMediaResource('media-1')).toBeNull();
+  });
+});
+
+
+describe('FileCommentStore webhook diagnostics', () => {
+  it('records and lists webhook receipts newest first', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'comment-store-'));
+    const store = new FileCommentStore(path.join(dir, 'comments.json'));
+    const receipt = (id: string, receivedAt: string): WebhookReceipt => ({
+      id,
+      receivedAt,
+      status: 'processed',
+      httpStatus: 200,
+      signaturePresent: true,
+      payloadObject: 'instagram',
+      entryCount: 1,
+      entryFields: ['comments'],
+      parsedComments: 1,
+      parsedMessages: 0,
+      resultSummary: 'comments received=1',
+      error: null,
+    });
+
+    await store.recordWebhookReceipt(receipt('receipt-1', '2026-10-27T10:00:00.000Z'));
+    await store.recordWebhookReceipt(receipt('receipt-2', '2026-10-27T11:00:00.000Z'));
+
+    const reloaded = new FileCommentStore(path.join(dir, 'comments.json'));
+    expect((await reloaded.listWebhookReceipts(5)).map((item) => item.id)).toEqual([
+      'receipt-2',
+      'receipt-1',
+    ]);
   });
 });
