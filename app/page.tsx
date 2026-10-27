@@ -1,6 +1,7 @@
 import { getConfig, getConfigStatus } from '../lib/config';
 import { getStore } from '../lib/store';
-import type { CommentRecord, DmStatus, FollowStatus } from '../lib/types';
+import type { CommentRecord, DmStatus, FollowStatus, MediaResource } from '../lib/types';
+import { deleteMediaResource, saveMediaResource } from './actions';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,17 +45,104 @@ function StatusDot({ state }: { state: 'ok' | 'missing' | 'warn' }) {
   return <span className={`dot dot-${state}`} aria-hidden="true" />;
 }
 
-export default async function DashboardPage() {
+interface DashboardPageProps {
+  searchParams?: Promise<{ resourceStatus?: string | string[] }>;
+}
+
+const RESOURCE_STATUS_MESSAGES: Record<string, string> = {
+  saved: 'Resource saved. New comments on that Reel will use it immediately — no redeploy needed.',
+  deleted: 'Dashboard resource removed. Any env/default fallback for that Reel now applies again.',
+  invalid: 'Please enter a valid media ID and an http(s) resource URL (label max 120 characters).',
+  'auth-required': 'Set DASHBOARD_USERNAME and DASHBOARD_PASSWORD to enable editing resources here.',
+  error: 'Could not save that resource. Check the storage/database connection and try again.',
+};
+
+export default async function DashboardPage({ searchParams }: DashboardPageProps) {
   const config = getConfig();
   const status = getConfigStatus(config);
+  const params = (await searchParams) ?? {};
+  const resourceStatus = Array.isArray(params.resourceStatus)
+    ? params.resourceStatus[0]
+    : params.resourceStatus;
+  const resourceStatusMessage = resourceStatus
+    ? RESOURCE_STATUS_MESSAGES[resourceStatus]
+    : null;
+  const resourceWritesEnabled = Boolean(
+    process.env.DASHBOARD_USERNAME && process.env.DASHBOARD_PASSWORD,
+  );
 
+  const store = getStore(config);
   let records: CommentRecord[] = [];
+  let mediaResources: MediaResource[] = [];
   let storeError: string | null = null;
   try {
-    records = await getStore(config).list(50);
+    records = await store.list(50);
+    mediaResources = await store.listMediaResources();
   } catch (error) {
     storeError = error instanceof Error ? error.message : 'Could not read the comment store';
   }
+
+  const dashboardResourcesByMedia = new Map(
+    mediaResources.map((resource) => [resource.mediaId, resource]),
+  );
+  interface ReelSummary {
+    mediaId: string;
+    commentCount: number;
+    lastSeenAt: string | null;
+    latestComment: CommentRecord | null;
+    dashboardResource: MediaResource | null;
+    envUrl: string | null;
+    effectiveUrl: string | null;
+    source: 'Dashboard' | 'Env fallback' | 'Default fallback' | 'Single DM_MESSAGE' | 'Not mapped';
+  }
+  const reelMap = new Map<string, ReelSummary>();
+  const ensureReel = (mediaId: string): ReelSummary => {
+    const existing = reelMap.get(mediaId);
+    if (existing) return existing;
+    const dashboardResource = dashboardResourcesByMedia.get(mediaId) ?? null;
+    const envUrl = config.mediaLinks[mediaId] ?? null;
+    const effectiveUrl = dashboardResource?.url ?? envUrl ?? config.defaultLinkUrl;
+    const created: ReelSummary = {
+      mediaId,
+      commentCount: 0,
+      lastSeenAt: null,
+      latestComment: null,
+      dashboardResource,
+      envUrl,
+      effectiveUrl,
+      source: dashboardResource
+        ? 'Dashboard'
+        : envUrl
+          ? 'Env fallback'
+          : config.defaultLinkUrl
+            ? 'Default fallback'
+            : status.dmMessageUsesLinkPlaceholder
+              ? 'Not mapped'
+              : 'Single DM_MESSAGE',
+    };
+    reelMap.set(mediaId, created);
+    return created;
+  };
+  for (const record of records) {
+    if (!record.mediaId) continue;
+    const reel = ensureReel(record.mediaId);
+    reel.commentCount += 1;
+    if (!reel.latestComment) {
+      reel.latestComment = record;
+      reel.lastSeenAt = record.receivedAt;
+    }
+  }
+  for (const mediaId of Object.keys(config.mediaLinks)) ensureReel(mediaId);
+  for (const resource of mediaResources) ensureReel(resource.mediaId);
+  const reels = [...reelMap.values()].sort((a, b) => {
+    const aTime = a.lastSeenAt ?? a.dashboardResource?.updatedAt ?? '';
+    const bTime = b.lastSeenAt ?? b.dashboardResource?.updatedAt ?? '';
+    return bTime.localeCompare(aTime);
+  });
+  const mappedReelCount = new Set([
+    ...mediaResources.map((resource) => resource.mediaId),
+    ...Object.keys(config.mediaLinks),
+  ]).size;
 
   const linkSent = records.filter(
     (record) => record.dmStatus === 'link_sent' || record.dmStatus === 'sent',
@@ -195,22 +283,18 @@ export default async function DashboardPage() {
           <li>
             <StatusDot
               state={
-                !status.mediaLinksConfigValid ||
-                (status.mediaLinkCount === 0 &&
-                  !status.defaultLinkConfigured &&
-                  status.dmMessageUsesLinkPlaceholder)
-                  ? 'missing'
-                  : status.mediaLinkCount > 0 || status.defaultLinkConfigured
-                    ? 'ok'
+                mappedReelCount > 0 || status.defaultLinkConfigured
+                  ? 'ok'
+                  : status.dmMessageUsesLinkPlaceholder
+                    ? 'missing'
                     : 'warn'
               }
             />
             <span>
-              Per-Reel links: {status.mediaLinkCount} mapped
-              {status.defaultLinkConfigured ? ', fallback link configured' : ', no fallback link'}{' '}
-              <span className="muted">
-                (<code>MEDIA_LINKS_JSON</code> / <code>DEFAULT_LINK_URL</code>)
-              </span>
+              Per-Reel links: {mediaResources.length} saved in this dashboard
+              {status.mediaLinkCount > 0 ? `, ${status.mediaLinkCount} optional env fallback(s)` : ''}
+              {status.defaultLinkConfigured ? ', default fallback configured' : ''}{' '}
+              <span className="muted">(manage them in <a href="#reel-resources">Reel resources</a> below — no redeploy)</span>
             </span>
           </li>
           <li>
@@ -257,6 +341,171 @@ export default async function DashboardPage() {
             ))}
           </div>
         </div>
+      </section>
+
+      <section className="card" id="reel-resources" aria-label="Reel resources">
+        <h2>Reel resources</h2>
+        <div className="small muted">
+          Add the resource link for each Reel/post here. It is saved in the database and used for
+          future comments on that media ID immediately — no Vercel env edit and no redeploy.
+          Dashboard mappings override the optional env fallback (<code>MEDIA_LINKS_JSON</code>).
+        </div>
+
+        {resourceStatusMessage ? (
+          <div className="resource-status">{resourceStatusMessage}</div>
+        ) : null}
+        {!status.mediaLinksConfigValid ? (
+          <div className="resource-status resource-status-error">
+            The optional <code>MEDIA_LINKS_JSON</code> / <code>DEFAULT_LINK_URL</code> env fallback is
+            invalid. Dashboard mappings above still work; fix or remove the env value when convenient.
+          </div>
+        ) : null}
+        {!resourceWritesEnabled ? (
+          <div className="resource-status resource-status-error">
+            Resource editing is disabled until <code>DASHBOARD_USERNAME</code> and{' '}
+            <code>DASHBOARD_PASSWORD</code> are set, so a public visitor cannot change your links.
+          </div>
+        ) : null}
+
+        <form action={saveMediaResource} className="resource-form resource-form-manual">
+          <label className="field" htmlFor="manual-media-id">
+            Reel / media ID
+            <input
+              id="manual-media-id"
+              name="mediaId"
+              placeholder="17900000000000001"
+              required
+              disabled={!resourceWritesEnabled}
+            />
+          </label>
+          <label className="field" htmlFor="manual-resource-label">
+            Resource name (optional)
+            <input
+              id="manual-resource-label"
+              name="label"
+              placeholder="Free guide, template…"
+              maxLength={120}
+              disabled={!resourceWritesEnabled}
+            />
+          </label>
+          <label className="field" htmlFor="manual-resource-url">
+            Resource URL
+            <input
+              id="manual-resource-url"
+              name="url"
+              type="url"
+              placeholder="https://example.com/resource"
+              required
+              disabled={!resourceWritesEnabled}
+            />
+          </label>
+          <button className="button button-primary" type="submit" disabled={!resourceWritesEnabled}>
+            Add resource
+          </button>
+        </form>
+
+        {reels.length === 0 ? (
+          <div className="empty">
+            <strong>No Reels seen yet</strong>
+            Once a comment arrives, its Reel/post appears here with a resource box underneath it.
+            You can also add a media ID manually with the form above.
+          </div>
+        ) : (
+          <div className="resource-list">
+            {reels.map((reel) => (
+              <article className="resource-item" key={reel.mediaId}>
+                <div className="resource-head">
+                  <div>
+                    <div className="resource-title">
+                      <span>{reel.dashboardResource?.label || 'Reel / post'}</span>
+                      <code>{reel.mediaId}</code>
+                    </div>
+                    <div className="small muted">
+                      {reel.commentCount} comment{reel.commentCount === 1 ? '' : 's'} in the last 50
+                      {reel.lastSeenAt ? ` · last seen ${formatTime(reel.lastSeenAt)}` : ''}
+                      {reel.latestComment
+                        ? ` · latest: “${reel.latestComment.text.slice(0, 90)}”${reel.latestComment.username ? ` by @${reel.latestComment.username}` : ''}`
+                        : ''}
+                    </div>
+                  </div>
+                  <span
+                    className={`pill ${
+                      reel.source === 'Dashboard'
+                        ? 'pill-link_sent'
+                        : reel.source === 'Not mapped'
+                          ? 'pill-failed'
+                          : reel.source === 'Env fallback'
+                            ? 'pill-prompt_sent'
+                            : 'pill-dry_run'
+                    }`}
+                  >
+                    {reel.source}
+                  </span>
+                </div>
+
+                {reel.effectiveUrl ? (
+                  <div className="small resource-current">
+                    Current link:{' '}
+                    <a href={reel.effectiveUrl} target="_blank" rel="noreferrer">
+                      {reel.effectiveUrl}
+                    </a>
+                  </div>
+                ) : reel.source === 'Single DM_MESSAGE' ? (
+                  <div className="small muted resource-current">
+                    No per-Reel link yet — the single <code>DM_MESSAGE</code> is used.
+                  </div>
+                ) : (
+                  <div className="small resource-current">
+                    No resource mapped yet — comments on this Reel receive no prompt/link.
+                  </div>
+                )}
+
+                <form action={saveMediaResource} className="resource-form">
+                  <input type="hidden" name="mediaId" value={reel.mediaId} />
+                  <label className="field" htmlFor={`label-${reel.mediaId}`}>
+                    Resource name (optional)
+                    <input
+                      id={`label-${reel.mediaId}`}
+                      name="label"
+                      defaultValue={reel.dashboardResource?.label ?? ''}
+                      placeholder="Free guide, template…"
+                      maxLength={120}
+                      disabled={!resourceWritesEnabled}
+                    />
+                  </label>
+                  <label className="field" htmlFor={`url-${reel.mediaId}`}>
+                    Resource URL for this Reel
+                    <input
+                      id={`url-${reel.mediaId}`}
+                      name="url"
+                      type="url"
+                      defaultValue={reel.dashboardResource?.url ?? reel.envUrl ?? ''}
+                      placeholder="https://example.com/this-reels-resource"
+                      required
+                      disabled={!resourceWritesEnabled}
+                    />
+                  </label>
+                  <button
+                    className="button button-primary"
+                    type="submit"
+                    disabled={!resourceWritesEnabled}
+                  >
+                    {reel.dashboardResource ? 'Update resource' : 'Save resource'}
+                  </button>
+                </form>
+
+                {reel.dashboardResource ? (
+                  <form action={deleteMediaResource} className="resource-delete">
+                    <input type="hidden" name="mediaId" value={reel.mediaId} />
+                    <button className="link-button" type="submit" disabled={!resourceWritesEnabled}>
+                      Remove dashboard resource
+                    </button>
+                  </form>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
       <section aria-label="Last 50 comments">

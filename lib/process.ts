@@ -97,6 +97,18 @@ function commentIdFromGetLinkPayload(payload: string | null): string | null {
   return payload?.startsWith(prefix) ? payload.slice(prefix.length) || null : null;
 }
 
+async function resolveDashboardFirstResourceLink(
+  store: CommentStore,
+  config: AppConfig,
+  mediaId: string | null,
+): Promise<string | null> {
+  if (mediaId) {
+    const dashboardResource = await store.getMediaResource(mediaId);
+    if (dashboardResource) return dashboardResource.url;
+  }
+  return resolveResourceLink(config, mediaId);
+}
+
 function usesPerMediaLinks(config: AppConfig): boolean {
   return (
     Object.keys(config.mediaLinks).length > 0 ||
@@ -246,8 +258,8 @@ export async function processCommentEvents(
 
       // Select this Reel/post's resource now and store it on the record, so
       // a later button tap cannot accidentally deliver another Reel's link.
-      const resourceLink = resolveResourceLink(config, comment.mediaId);
-      if (config.mediaLinksConfigError) {
+      const resourceLink = await resolveDashboardFirstResourceLink(store, config, comment.mediaId);
+      if (!resourceLink && config.mediaLinksConfigError) {
         await store.update(comment.commentId, {
           dmStatus: 'failed',
           matchedKeyword,
@@ -263,7 +275,7 @@ export async function processCommentEvents(
           matchedKeyword,
           resourceLink: null,
           error: comment.mediaId
-            ? `No link configured for media ${comment.mediaId}; add it to MEDIA_LINKS_JSON or set DEFAULT_LINK_URL`
+            ? `No link configured for media ${comment.mediaId}; add it in the dashboard Reel resources section (or MEDIA_LINKS_JSON / DEFAULT_LINK_URL)`
             : 'Webhook did not include a media id and DEFAULT_LINK_URL is not configured',
         });
         summary.failed += 1;
@@ -500,13 +512,22 @@ export async function processMessageEvents(
       summary.failed += 1;
       continue;
     }
-    const resourceLink = pending.resourceLink ?? resolveResourceLink(config, pending.mediaId);
+    // Dashboard edits for this exact Reel win at tap time (useful for
+    // correcting a link), then the snapshot stored with the comment, then
+    // the optional env mapping/fallback.
+    const dashboardResource = pending.mediaId
+      ? await store.getMediaResource(pending.mediaId)
+      : null;
+    const resourceLink =
+      dashboardResource?.url ??
+      pending.resourceLink ??
+      resolveResourceLink(config, pending.mediaId);
     if (!resourceLink && (config.mediaLinksConfigError || usesPerMediaLinks(config))) {
       await store.update(pending.commentId, {
         error:
           config.mediaLinksConfigError ??
           (pending.mediaId
-            ? `No link configured for media ${pending.mediaId}; add it to MEDIA_LINKS_JSON or set DEFAULT_LINK_URL`
+            ? `No link configured for media ${pending.mediaId}; add it in the dashboard Reel resources section (or MEDIA_LINKS_JSON / DEFAULT_LINK_URL)`
             : 'No DEFAULT_LINK_URL configured for this comment'),
       });
       summary.failed += 1;

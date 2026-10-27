@@ -12,10 +12,13 @@ keywords or **any non-empty comment**.
   handles both `comments` events and messaging events (button taps).
 - Two trigger modes: case-insensitive, whole-word keywords (including your
   typo variants), or **any non-empty comment** (`COMMENT_MATCH_MODE=any`).
-- **Different links per Reel/post:** the comment's media id selects a URL
-  from `MEDIA_LINKS_JSON` (with an optional fallback). The button payload
-  identifies the exact comment, so pending prompts from different Reels
-  cannot deliver each other's links.
+- **Different links per Reel/post, managed in the dashboard:** the
+  dashboard's **Reel resources** section lists each media id seen in
+  comments; paste that Reel's resource URL once and it is saved in the
+  database for future comments — no env edit or redeploy. `MEDIA_LINKS_JSON`
+  remains an optional env fallback. The button payload identifies the exact
+  comment, so pending prompts from different Reels cannot deliver each
+  other's links.
 - **Follow status is checked twice, fail-closed both times:** check #1 runs
   before the thanks prompt is sent; check #2 runs again when the user taps
   the button. The link is sent only if Meta's `is_user_follow_business`
@@ -92,8 +95,8 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 | `INTRO_DM_MESSAGE` | no | First private-reply prompt, sent only after check #1 passes. Default: “Thanks for commenting, {username}! Tap the button below to get your link.” |
 | `GET_LINK_BUTTON_TEXT` | no | Quick-reply button label. Default `Click to get link`; Meta truncates titles after 20 characters, so the app caps this at 20. |
 | `DM_MESSAGE` | no | Final message template sent after the button tap and check #2. Default `Here is your link: {link}`. `{username}` → e.g. `@alice`; `{keyword}` → matched word (empty in any-comment mode); `{link}` → selected Reel/post URL. |
-| `MEDIA_LINKS_JSON` | for per-Reel links | Single-line JSON object mapping Instagram **media id → URL**, e.g. `{"179...1":"https://.../a","179...2":"https://.../b"}`. Copy media ids from the dashboard's Reel/media ID column. Invalid JSON/URLs fail closed. |
-| `DEFAULT_LINK_URL` | no | Optional fallback URL for media with no `MEDIA_LINKS_JSON` entry. Leave unset if a new/unmapped Reel must receive nothing rather than a default link. |
+| `MEDIA_LINKS_JSON` | no | Optional env fallback: single-line JSON object mapping Instagram **media id → URL**. Normally leave unset/`{}` and manage per-Reel links in the dashboard's Reel resources section; dashboard mappings override this. Invalid JSON/URLs fail closed when no dashboard mapping applies. |
+| `DEFAULT_LINK_URL` | no | Optional fallback URL for media with no dashboard or `MEDIA_LINKS_JSON` entry. Leave unset if a new/unmapped Reel must receive nothing rather than a default link. |
 | `NOT_FOLLOWING_MESSAGE` / `FOLLOW_UNVERIFIED_MESSAGE` | no | Prompts sent when check #2 returns false/unverified. Each carries a Try again button so the user can follow and re-check without commenting again. |
 | `TRY_AGAIN_BUTTON_TEXT` | no | Retry button label. Default `Try again` (max 20 characters). |
 | `REQUIRE_FOLLOW_BEFORE_PROMPT` | yes, keep `true` | Check #1, before the thanks prompt. False/unverified = no prompt DM at all. |
@@ -106,7 +109,7 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 | `IG_ACCOUNT_ID` | no | Your professional account id; if set, events for other accounts are ignored. |
 | `META_GRAPH_VERSION` | no | Default `v25.0`. Check Meta's changelog before changing. |
 | `DATA_FILE` | no | Local file store path (only when `DATABASE_URL` is empty). Default `./data/comments.json`. |
-| `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` | recommended | Enables Basic Auth on the dashboard page (it shows usernames + comment text). Webhook/health stay public for Meta. |
+| `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` | required to edit resources | Enables Basic Auth on the dashboard. Resource add/edit/delete actions are refused unless both are set. Webhook/health stay public for Meta. |
 
 ---
 
@@ -205,10 +208,11 @@ This runs
 2. From that second account, comment on one of your posts/Reels — your
    keyword in keywords mode, or anything in any-comment mode. (Commenting
    from your own account is recorded as "Own comment" and never DMs you.)
-   The dashboard row shows that Reel/post's **media id**: add it to
-   `MEDIA_LINKS_JSON` with that Reel's URL (or set `DEFAULT_LINK_URL`) and
-   redeploy before the public test, otherwise an unmapped Reel fails closed
-   with “No link configured for media …” and nobody is prompted.
+   That Reel/post then appears in the dashboard's **Reel resources**
+   section: paste its resource URL under its media id and click **Save
+   resource** (no env edit or redeploy). Before it is mapped, an unmapped
+   Reel fails closed with “No link configured for media …” and nobody is
+   prompted, so map it and comment again for the full public test.
 3. The commenter should receive **only** the “Thanks for commenting”
    prompt with a **Click to get link** button — no link yet. Tap it: the app
    checks the follow a second time and then sends the link. The dashboard
@@ -288,7 +292,8 @@ Someone comments "LINK please!" on your Reel
 Meta comments webhook ─► verify X-Hub-Signature-256 (raw body)
                          CLAIM comment id                 ◄─ duplicate? stop
                          trigger? (keyword / ANY)       ◄─ no: record only
-                         resolve link for media id      ◄─ unmapped: no DM
+                         resolve Reel link (dashboard DB,
+                           then env fallback)             ◄─ unmapped: no DM
                          FOLLOW CHECK #1
                            GET /<IGSID>?fields=is_user_follow_business
                                                           ◄─ not true: no DM
@@ -322,7 +327,7 @@ Files:
 | `scripts/simulate-webhook.mjs` | Signed fake webhook for local testing |
 | `scripts/subscribe-webhooks.mjs` | `POST /me/subscribed_apps` one-time setup |
 | `scripts/refresh-token.mjs` | Long-lived token refresh helper |
-| `test/` | 54 unit tests (signature, keyword/any matching, per-Reel links, dedupe, both follow checks, retry flow, API clients) |
+| `test/` | 57 unit tests (signature, keyword/any matching, dashboard-managed per-Reel links, dedupe, both follow checks, retry flow, API clients) |
 
 ---
 
@@ -372,7 +377,7 @@ Files:
 | DM status `failed` + code 190 / 463 | Token expired/invalid — refresh or regenerate, update env, redeploy. |
 | DM status `failed` + permission error | Token lacks `instagram_business_manage_messages` — add the permission, regenerate the token. |
 | “Not following — no DM” at the comment stage | Working as intended: check #1 returned `is_user_follow_business=false`, so no prompt was sent. The person must follow and comment again. (After a prompt, a false check #2 instead sends the follow-and-Try-again message.) |
-| “No link configured for media …” | Add that dashboard media id to `MEDIA_LINKS_JSON` with the Reel's URL, or set `DEFAULT_LINK_URL`, then redeploy and comment again. No prompt is sent for an unmapped Reel. |
+| “No link configured for media …” | In the dashboard's Reel resources section, paste that Reel's URL under its media id and save (dashboard credentials required), then comment again. `MEDIA_LINKS_JSON` / `DEFAULT_LINK_URL` remain optional env fallbacks. No prompt is sent for an unmapped Reel. |
 | Comments trigger nothing in any-comment mode | Confirm `COMMENT_MATCH_MODE=any` on the deployed build (`/api/health`), the comment is non-empty, and the same user does not already have a prompt/link flow for that Reel. |
 | “Follow unverified — no DM” at the comment stage | Check #1 could not obtain a boolean, commonly because the commenter has not previously messaged your account to grant profile consent. The app sends nothing. Check Detail for Meta's error; token/permission problems can also appear here. |
 | Duplicate test comments all say `duplicates: 1` | Working as intended — that comment id was already claimed. Use a new comment (or new `-- id` in simulate). |

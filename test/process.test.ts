@@ -385,6 +385,67 @@ describe('comment match modes and per-Reel links', () => {
       resourceLink: 'https://example.com/reel-b',
     });
   });
+
+  it('uses a dashboard-saved Reel resource before the env fallback', async () => {
+    const store = tempStore();
+    await store.upsertMediaResource({
+      mediaId: 'media-1',
+      url: 'https://example.com/dashboard-reel-a',
+      label: 'Dashboard guide',
+    });
+    const config = testConfig({
+      commentMatchMode: 'any',
+      dmMessage: 'Here is your link: {link}',
+      mediaLinks: { 'media-1': 'https://example.com/env-reel-a' },
+    });
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({
+      messageId: 'prompt-dashboard',
+      recipientId: 'user-9',
+    }));
+    const sendUserDm = vi.fn(async (_input: SendUserDmInput) => ({ messageId: 'link-dashboard' }));
+    const deps = { store, config, sendDm, sendUserDm };
+
+    await processCommentEvents([testComment({ text: 'anything' })], deps);
+    await processMessageEvents(
+      [testClick({ payload: `${GET_LINK_PAYLOAD}:comment-1` })],
+      deps,
+    );
+
+    expect(sendUserDm.mock.calls[0][0].message).toBe(
+      'Here is your link: https://example.com/dashboard-reel-a',
+    );
+    expect((await store.list(50))[0].resourceLink).toBe('https://example.com/dashboard-reel-a');
+  });
+
+  it('uses a dashboard correction made after the prompt but before the tap', async () => {
+    const store = tempStore();
+    const config = testConfig({
+      commentMatchMode: 'any',
+      dmMessage: 'Here is your link: {link}',
+      mediaLinks: { 'media-1': 'https://example.com/old-link' },
+    });
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({
+      messageId: 'prompt-old',
+      recipientId: 'user-9',
+    }));
+    const sendUserDm = vi.fn(async (_input: SendUserDmInput) => ({ messageId: 'link-new' }));
+    const deps = { store, config, sendDm, sendUserDm };
+
+    await processCommentEvents([testComment({ text: 'anything' })], deps);
+    await store.upsertMediaResource({
+      mediaId: 'media-1',
+      url: 'https://example.com/corrected-link',
+      label: null,
+    });
+    await processMessageEvents(
+      [testClick({ payload: `${GET_LINK_PAYLOAD}:comment-1` })],
+      deps,
+    );
+
+    expect(sendUserDm.mock.calls[0][0].message).toBe(
+      'Here is your link: https://example.com/corrected-link',
+    );
+  });
 });
 
 describe('processMessageEvents — second follow check after button tap', () => {

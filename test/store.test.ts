@@ -67,3 +67,32 @@ describe('FileCommentStore click claiming', () => {
     expect(await store.findLatestPendingByCommenterId('user-9')).toBeNull();
   });
 });
+
+
+describe('FileCommentStore dashboard media resources', () => {
+  it('saves, updates, lists, reloads, and deletes Reel resources', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'comment-store-'));
+    const filePath = path.join(dir, 'comments.json');
+    const store = new FileCommentStore(filePath);
+
+    const saved = await store.upsertMediaResource({
+      mediaId: 'media-1',
+      url: 'https://example.com/reel-a',
+      label: 'Reel A guide',
+    });
+    expect(saved).toMatchObject({ mediaId: 'media-1', url: 'https://example.com/reel-a' });
+    expect((await store.getMediaResource('media-1'))?.label).toBe('Reel A guide');
+
+    await store.upsertMediaResource({
+      mediaId: 'media-1',
+      url: 'https://example.com/reel-a-v2',
+      label: null,
+    });
+    const reloaded = new FileCommentStore(filePath);
+    expect(await reloaded.listMediaResources()).toHaveLength(1);
+    expect((await reloaded.getMediaResource('media-1'))?.url).toBe('https://example.com/reel-a-v2');
+
+    await reloaded.deleteMediaResource('media-1');
+    expect(await reloaded.getMediaResource('media-1')).toBeNull();
+  });
+});

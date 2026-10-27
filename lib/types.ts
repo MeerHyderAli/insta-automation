@@ -53,6 +53,15 @@ export type CommentPatch = Partial<
   >
 >;
 
+/** Resource link mapped to one Reel/post media id from the dashboard. */
+export interface MediaResource {
+  mediaId: string;
+  url: string;
+  label: string | null;
+  /** ISO-8601 */
+  updatedAt: string;
+}
+
 export interface ParsedComment {
   commentId: string;
   igAccountId: string | null;

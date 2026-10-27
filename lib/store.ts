@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import type { AppConfig } from './config';
 import { getConfig } from './config';
-import type { CommentPatch, CommentRecord } from './types';
+import type { CommentPatch, CommentRecord, MediaResource } from './types';
 
 /**
  * Durable record of every comment we have seen.
@@ -27,6 +27,14 @@ export interface CommentStore {
     excludeCommentId: string,
   ): Promise<boolean>;
   tryClaimClick(commentId: string, eventId: string): Promise<CommentRecord | null>;
+  listMediaResources(): Promise<MediaResource[]>;
+  getMediaResource(mediaId: string): Promise<MediaResource | null>;
+  upsertMediaResource(input: {
+    mediaId: string;
+    url: string;
+    label: string | null;
+  }): Promise<MediaResource>;
+  deleteMediaResource(mediaId: string): Promise<void>;
 }
 
 const PENDING_DM_STATUSES = new Set(['prompt_sent', 'follow_prompt_sent']);
@@ -90,6 +98,44 @@ export class FileCommentStore implements CommentStore {
     const tmpPath = `${this.filePath}.${process.pid}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(records, null, 2), 'utf8');
     await fs.rename(tmpPath, this.filePath);
+  }
+
+  private get resourcesFilePath(): string {
+    return this.filePath.endsWith('.json')
+      ? `${this.filePath.slice(0, -'.json'.length)}.resources.json`
+      : `${this.filePath}.resources.json`;
+  }
+
+  private async readResources(): Promise<MediaResource[]> {
+    let raw: string;
+    try {
+      raw = await fs.readFile(this.resourcesFilePath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(`Media resource store file is corrupted (invalid JSON): ${this.resourcesFilePath}`);
+    }
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as Array<Partial<MediaResource>>)
+      .filter((resource) => resource.mediaId && resource.url)
+      .map((resource) => ({
+        mediaId: String(resource.mediaId),
+        url: String(resource.url),
+        label: resource.label ? String(resource.label) : null,
+        updatedAt: resource.updatedAt ? String(resource.updatedAt) : new Date(0).toISOString(),
+      }));
+  }
+
+  private async writeResources(resources: MediaResource[]): Promise<void> {
+    await fs.mkdir(path.dirname(this.resourcesFilePath), { recursive: true });
+    const tmpPath = `${this.resourcesFilePath}.${process.pid}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(resources, null, 2), 'utf8');
+    await fs.rename(tmpPath, this.resourcesFilePath);
   }
 
   tryClaim(record: CommentRecord): Promise<boolean> {
@@ -173,6 +219,39 @@ export class FileCommentStore implements CommentStore {
       };
       await this.writeAll(all);
       return all[index];
+    });
+  }
+
+  async listMediaResources(): Promise<MediaResource[]> {
+    const resources = await this.readResources();
+    return resources.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async getMediaResource(mediaId: string): Promise<MediaResource | null> {
+    const resources = await this.readResources();
+    return resources.find((resource) => resource.mediaId === mediaId) ?? null;
+  }
+
+  upsertMediaResource(input: {
+    mediaId: string;
+    url: string;
+    label: string | null;
+  }): Promise<MediaResource> {
+    return this.run(async () => {
+      const resources = await this.readResources();
+      const resource: MediaResource = { ...input, updatedAt: new Date().toISOString() };
+      const index = resources.findIndex((existing) => existing.mediaId === input.mediaId);
+      if (index === -1) resources.push(resource);
+      else resources[index] = resource;
+      await this.writeResources(resources);
+      return resource;
+    });
+  }
+
+  deleteMediaResource(mediaId: string): Promise<void> {
+    return this.run(async () => {
+      const resources = await this.readResources();
+      await this.writeResources(resources.filter((resource) => resource.mediaId !== mediaId));
     });
   }
 }
@@ -261,7 +340,13 @@ export class PostgresCommentStore implements CommentStore {
            CREATE INDEX IF NOT EXISTS processed_comments_received_at_idx
              ON processed_comments (received_at DESC);
            CREATE INDEX IF NOT EXISTS processed_comments_commenter_idx
-             ON processed_comments (commenter_id, received_at DESC);`,
+             ON processed_comments (commenter_id, received_at DESC);
+           CREATE TABLE IF NOT EXISTS media_resources (
+             media_id   TEXT PRIMARY KEY,
+             url        TEXT NOT NULL,
+             label      TEXT,
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+           );`,
         )
         .then(() => undefined);
     }
@@ -379,6 +464,68 @@ export class PostgresCommentStore implements CommentStore {
       [commenterId, mediaId, excludeCommentId],
     );
     return (result.rowCount ?? 0) > 0;
+  }
+
+  async listMediaResources(): Promise<MediaResource[]> {
+    await this.ensureSchema();
+    const result = await this.pool.query<{
+      media_id: string;
+      url: string;
+      label: string | null;
+      updated_at: Date | string;
+    }>(
+      `SELECT media_id, url, label, updated_at
+         FROM media_resources
+        ORDER BY updated_at DESC`,
+    );
+    return result.rows.map((row) => ({
+      mediaId: row.media_id,
+      url: row.url,
+      label: row.label,
+      updatedAt:
+        row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
+    }));
+  }
+
+  async getMediaResource(mediaId: string): Promise<MediaResource | null> {
+    const resources = await this.listMediaResources();
+    return resources.find((resource) => resource.mediaId === mediaId) ?? null;
+  }
+
+  async upsertMediaResource(input: {
+    mediaId: string;
+    url: string;
+    label: string | null;
+  }): Promise<MediaResource> {
+    await this.ensureSchema();
+    const result = await this.pool.query<{
+      media_id: string;
+      url: string;
+      label: string | null;
+      updated_at: Date | string;
+    }>(
+      `INSERT INTO media_resources (media_id, url, label, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (media_id) DO UPDATE
+         SET url = EXCLUDED.url,
+             label = EXCLUDED.label,
+             updated_at = now()
+       RETURNING media_id, url, label, updated_at`,
+      [input.mediaId, input.url, input.label],
+    );
+    const row = result.rows[0];
+    return {
+      mediaId: row.media_id,
+      url: row.url,
+      label: row.label,
+      updatedAt:
+        row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
+    };
+  }
+
+  async deleteMediaResource(mediaId: string): Promise<void> {
+    await this.ensureSchema();
+    await this.pool.query(`DELETE FROM media_resources WHERE media_id = $1`, [mediaId]);
   }
 
   async tryClaimClick(commentId: string, eventId: string): Promise<CommentRecord | null> {
