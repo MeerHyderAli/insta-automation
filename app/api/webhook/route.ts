@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { getConfig } from '../../../lib/config';
-import { isInstagramWebhook, parseCommentEvents } from '../../../lib/parse';
-import { processCommentEvents } from '../../../lib/process';
+import { isInstagramWebhook, parseCommentEvents, parseMessageEvents } from '../../../lib/parse';
+import { processCommentEvents, processMessageEvents } from '../../../lib/process';
 import { safeEqualString, verifyMetaSignature } from '../../../lib/signature';
 import { getStore } from '../../../lib/store';
 
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
 }
 
 /**
- * Comment webhook events. The signature is verified against the RAW body
+ * Comment and messaging webhook events. The signature is verified against the RAW body
  * before any parsing. Valid events are always answered with 200 once they
  * have been recorded (Meta retries non-200 responses for up to 36 hours;
  * the store's claim step makes those redeliveries harmless duplicates).
@@ -64,12 +64,16 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const comments = parseCommentEvents(payload);
-    const summary = await processCommentEvents(comments, {
-      store: getStore(config),
+    const store = getStore(config);
+    const comments = await processCommentEvents(parseCommentEvents(payload), {
+      store,
       config,
     });
-    return NextResponse.json({ ok: true, ...summary });
+    const messages = await processMessageEvents(parseMessageEvents(payload), {
+      store,
+      config,
+    });
+    return NextResponse.json({ ok: true, comments, messages });
   } catch (error) {
     // Never log secrets or the raw payload. A 500 makes Meta retry, and
     // already-claimed comment ids are skipped as duplicates on redelivery.

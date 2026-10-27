@@ -1,27 +1,31 @@
 # Comment-to-DM for Instagram (single account)
 
 A small [Next.js](https://nextjs.org/) app for **one Instagram professional account**.
-When someone comments your keyword on a post or Reel, the app checks
-whether Meta verifies that commenter as a follower. Only then does it send
-that commenter **one private reply (DM)** with your message and link, using
-only the **official Instagram API with Instagram Login**.
+When someone comments your keyword on a post or Reel, the app verifies that
+the commenter follows you, sends a “Thanks for commenting” private reply with
+a **Click to get link** button, then verifies the follow **again** after the
+button tap before sending the link — using only the official Instagram API
+with Instagram Login.
 
 - Webhook route (`/api/webhook`) verifies Meta's `X-Hub-Signature-256` and
-  handles `comments` events.
+  handles both `comments` events and messaging events (button taps).
 - Case-insensitive, whole-word keyword matching, including your typo
   variants (configurable list).
-- **Follower-only, fail-closed:** before sending, the app reads Meta's
-  `is_user_follow_business` field. It sends only on `true`; `false` and
-  “could not verify” both result in no DM.
-- Every comment ID is stored **before** sending, so Meta redeliveries or
-  duplicate notifications can never produce a second DM.
+- **Follow status is checked twice, fail-closed both times:** check #1 runs
+  before the thanks prompt is sent; check #2 runs again when the user taps
+  the button. The link is sent only if Meta's `is_user_follow_business`
+  field is `true` at check #2. A false/unverified result at check #1 means
+  no prompt at all; at check #2 it means a follow-and-retry prompt, no link.
+- Every comment ID is stored **before** sending, and every button-tap
+  event ID is claimed before handling, so Meta redeliveries cannot produce
+  duplicate prompts or links.
 - The access token is read from an environment variable, server-side only —
   never hardcoded, never sent to the browser.
-- A dashboard page lists the **last 50 comments** and whether a DM went out
-  (only API-confirmed sends are shown as "sent").
+- A dashboard page lists the **last 50 comments** with the latest follow
+  result and stage (prompt sent, waiting for tap, link sent, skipped, …).
 
 No scraping, no unofficial endpoints, no password login, no public replies —
-just the documented private-reply flow.
+just the documented private-reply, quick-reply, and messaging flows.
 
 ---
 
@@ -33,11 +37,11 @@ cp .env.example .env.local
 ```
 
 Edit `.env.local`: set any value for `META_APP_SECRET`, keep
-`DRY_RUN=true`, set your `COMMENT_KEYWORDS` / `DM_MESSAGE`, and temporarily
-set `REQUIRE_FOLLOW_TO_SEND=false` for this sender-pipeline simulation.
-Fake local users cannot be verified through Meta, so with the production
-follow gate enabled they are correctly blocked as “follow unverified”. Set
-the gate back to `true` for production.
+`DRY_RUN=true`, set your keywords/messages, and temporarily set
+`REQUIRE_FOLLOW_BEFORE_PROMPT=false` and `REQUIRE_FOLLOW_FOR_LINK=false`
+for this sender-pipeline simulation. Fake local users cannot be verified
+through Meta, so with the production follow checks enabled they are blocked
+at check #1 as “follow unverified”. Keep both checks `true` in production.
 
 ```bash
 npm run dev
@@ -55,7 +59,9 @@ npm run simulate -- "great post!" carol
 Open <http://localhost:3000> — you should see three comments: two "dry run"
 matches and one "no keyword". Run the first simulate command again with the
 same comment id (the script prints the exact command) to prove dedupe:
-the response reports `duplicates: 1` and no second DM would be sent.
+the response reports `comments.duplicates: 1` and no second prompt/link
+would be sent. The button stage is covered by the unit tests and the live
+test in section 3.
 
 Run the test suite any time:
 
@@ -78,8 +84,14 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 | `IG_ACCESS_TOKEN` | for real DMs | Long-lived Instagram Login token for your professional account. Server-side only. Expires ~60 days (see token refresh). |
 | `META_APP_SECRET` | yes | Meta app secret. Used to verify `X-Hub-Signature-256` on every webhook POST. |
 | `META_WEBHOOK_VERIFY_TOKEN` | yes | A long random string **you invent**, pasted into Meta's webhook config. |
-| `DM_MESSAGE` | for real DMs | The private reply text, including your link. `{username}` → e.g. `@alice`; `{keyword}` → matched word. |
-| `REQUIRE_FOLLOW_TO_SEND` | yes, keep `true` | Follower-only gate. Default is also `true` when unset. Send only if Meta returns `is_user_follow_business=true`; false/unverified = no DM. Set `false` only for local dry-run pipeline tests. |
+| `INTRO_DM_MESSAGE` | no | First private-reply prompt, sent only after check #1 passes. Default: “Thanks for commenting, {username}! Tap the button below to get your link.” |
+| `GET_LINK_BUTTON_TEXT` | no | Quick-reply button label. Default `Click to get link`; Meta truncates titles after 20 characters, so the app caps this at 20. |
+| `DM_MESSAGE` | for real links | Final message, including your link, sent only after the button tap and check #2. `{username}` → e.g. `@alice`; `{keyword}` → matched word. |
+| `NOT_FOLLOWING_MESSAGE` / `FOLLOW_UNVERIFIED_MESSAGE` | no | Prompts sent when check #2 returns false/unverified. Each carries a Try again button so the user can follow and re-check without commenting again. |
+| `TRY_AGAIN_BUTTON_TEXT` | no | Retry button label. Default `Try again` (max 20 characters). |
+| `REQUIRE_FOLLOW_BEFORE_PROMPT` | yes, keep `true` | Check #1, before the thanks prompt. False/unverified = no prompt DM at all. |
+| `REQUIRE_FOLLOW_FOR_LINK` | yes, keep `true` | Check #2, after the button tap and before `DM_MESSAGE`. False/unverified = follow prompt, no link. |
+| `REQUIRE_FOLLOW_TO_SEND` | legacy fallback | Older single-check setting. If either specific flag above is unset, this value is used for it. A specific flag always wins. |
 | `COMMENT_KEYWORDS` | no | Comma-separated, case-insensitive, whole-word. Your keyword first, then typos. Default: `link,links,lnik,likn,lnk,liink,linkk` — change these to yours. |
 | `DATABASE_URL` | on serverless | Postgres connection string for durable dedupe storage. **Required on Vercel.** Empty = local JSON file store. |
 | `DRY_RUN` | no | `true` = record matches but never call Instagram. Must be `false` in production. |
@@ -116,7 +128,7 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 Meta verifies your webhook URL the moment you save it, so the app must be
 live first. Deploy with at least `META_APP_SECRET`,
 `META_WEBHOOK_VERIFY_TOKEN`, `DATABASE_URL` (on Vercel),
-`COMMENT_KEYWORDS` and `DM_MESSAGE` set (see deployment section below).
+`COMMENT_KEYWORDS`, `INTRO_DM_MESSAGE` and `DM_MESSAGE` set (see below).
 `IG_ACCESS_TOKEN` can be added after Step 5.
 
 ### Step 4 — Configure the webhook
@@ -128,8 +140,9 @@ live first. Deploy with at least `META_APP_SECRET`,
 4. Click **Verify and save**. Meta sends
    `GET /api/webhook?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...`
    and this app echoes the challenge when the token matches.
-5. In **Webhook fields**, subscribe to **`comments`** (add `live_comments`
-   only if you also want live-stream comments).
+5. In **Webhook fields**, subscribe to **`comments`**, **`messages`**, and
+   **`messaging_postbacks`** (the latter two deliver button taps; add
+   `live_comments` only if you also want live-stream comments).
 
 ### Step 5 — Permissions and generate your access token
 
@@ -139,15 +152,15 @@ Under **Instagram → API setup with Instagram login**:
    - `instagram_business_basic`
    - `instagram_business_manage_comments` — receive `comments` webhooks /
      read comments.
-   - `instagram_business_manage_messages` — read the profile follow field
-     and send the private reply DM.
+   - `instagram_business_manage_messages` — read the profile follow field,
+     send the private-reply prompt, receive button taps, and send the link.
 2. Add/connect **your** Instagram professional account in the API setup page
    and use **Generate access token** for that account. Log in as that
    account and approve all three permissions.
 3. Copy the token into `IG_ACCESS_TOKEN` in your host env, set
-   `DRY_RUN=false` and `REQUIRE_FOLLOW_TO_SEND=true`, and redeploy. This
-   dashboard-generated token is long-lived (~60 days). Treat it like a
-   password.
+   `DRY_RUN=false`, `REQUIRE_FOLLOW_BEFORE_PROMPT=true`, and
+   `REQUIRE_FOLLOW_FOR_LINK=true`, then redeploy. This dashboard-generated
+   token is long-lived (~60 days). Treat it like a password.
 
 > **Development mode is enough for your own account:** while the app is in
 > Development mode, the API works for accounts that have a role in the app
@@ -170,7 +183,8 @@ npm run ig:subscribe
 ```
 
 This runs
-`POST https://graph.instagram.com/v25.0/me/subscribed_apps?subscribed_fields=comments`.
+`POST /me/subscribed_apps` with
+`subscribed_fields=comments,messages,messaging_postbacks`.
 
 ### Step 7 — Live test
 
@@ -182,10 +196,16 @@ This runs
 2. From that second account, comment your keyword (e.g. `LINK`) on one of
    your posts/Reels. (Commenting from your own account is recorded as
    "Own comment" and never DMs you.)
-3. Open your dashboard (`https://YOUR-DOMAIN/`). A verified follower should
-   appear as **Verified follower → DM sent** with a message id. A
-   non-follower appears as **Not following — no DM**; someone Meta cannot
-   verify appears as **Follow unverified — no DM**.
+3. The commenter should receive **only** the “Thanks for commenting”
+   prompt with a **Click to get link** button — no link yet. Tap it: the app
+   checks the follow a second time and then sends the link. The dashboard
+   row moves **Thanks prompt sent → Link sent**.
+4. To prove check #2 is independent, repeat with another comment, unfollow
+   after the prompt arrives, then tap the button: you should get the
+   follow-and-**Try again** prompt instead of the link. Follow again and
+   tap **Try again** to receive the link.
+5. A commenter who fails check #1 appears as **Not following — no DM** or
+   **Follow unverified — no DM** and receives nothing.
 
 ### Token refresh (~every 60 days)
 
@@ -252,16 +272,21 @@ cloudflared tunnel --url http://localhost:3000
 Someone comments "LINK please!" on your Reel
         │
         ▼
-Meta ──POST /api/webhook (signed)──► verify X-Hub-Signature-256 (raw body)
-                                      parse `comments` change
-                                      CLAIM comment id in store  ◄─ duplicate? stop
-                                      keyword match?             ◄─ no: record only
-                                      GET /<IGSID>?fields=
-                                        is_user_follow_business  ◄─ not true: stop
-                                      POST /<IG_ID>/messages
-                                        { recipient: { comment_id },
-                                          message: { text: DM_MESSAGE } }
-                                      record sent + message id / failed + error
+Meta comments webhook ─► verify X-Hub-Signature-256 (raw body)
+                         CLAIM comment id                 ◄─ duplicate? stop
+                         keyword match?                   ◄─ no: record only
+                         FOLLOW CHECK #1
+                           GET /<IGSID>?fields=is_user_follow_business
+                                                          ◄─ not true: no DM
+                         POST /<IG_ID>/messages
+                           recipient.comment_id +
+                           INTRO_DM_MESSAGE + [Click to get link]
+        │ user taps the button
+        ▼
+Meta messages webhook ─► CLAIM tap event id               ◄─ duplicate? stop
+                         FOLLOW CHECK #2 (again)
+                           ├─ true        ─► send DM_MESSAGE (the link)
+                           └─ false/unknown ─► send follow prompt + [Try again]
 Dashboard (/) ◄── last 50 records from the same store
 ```
 
@@ -274,40 +299,50 @@ Files:
 | `app/api/health/route.ts` | Non-secret config/status smoke check |
 | `middleware.ts` | Optional Basic Auth for the dashboard |
 | `lib/signature.ts` | HMAC-SHA256 verification (constant-time) |
-| `lib/parse.ts` | Webhook payload → comment events |
+| `lib/parse.ts` | Webhook payload → comment events + messaging (tap) events |
 | `lib/keywords.ts` | Case-insensitive whole-word matching |
-| `lib/process.ts` | Claim → match → verify follower → send → record pipeline |
-| `lib/instagram.ts` | Follow-status + private-reply API clients (sanitized errors) |
+| `lib/process.ts` | Comment stage (check #1 → prompt) and tap stage (check #2 → link/prompt) |
+| `lib/instagram.ts` | Follow-status, private-reply, and conversation-message API clients |
 | `lib/store.ts` | Postgres or JSON-file store with atomic claim |
 | `lib/config.ts` | All env parsing (tokens never hardcoded) |
 | `scripts/simulate-webhook.mjs` | Signed fake webhook for local testing |
 | `scripts/subscribe-webhooks.mjs` | `POST /me/subscribed_apps` one-time setup |
 | `scripts/refresh-token.mjs` | Long-lived token refresh helper |
-| `test/` | 39 unit tests (signature, matching, parsing, dedupe, follower gate, processing, API clients) |
+| `test/` | 48 unit tests (signature, matching, parsing, dedupe, both follow checks, retry flow, API clients) |
 
 ---
 
 ## 6. Rules & limitations (from Meta's docs — not app bugs)
 
 - **One private reply per comment**, within **7 days** of the comment (for
-  Live comments, only during the broadcast). After the commenter replies,
-  the standard 24-hour messaging window applies to further messages.
+  Live comments, only during the broadcast) — that one reply is the thanks
+  prompt. The button tap is a user message, which opens the standard
+  24-hour messaging window for the link/follow-prompt follow-ups.
+- **Private-reply quick replies still need one controlled live check.**
+  Meta documents quick replies and private replies on the same
+  `/messages` endpoint, but the official pages fetched for this project do
+  not show a combined `recipient.comment_id` + `quick_replies` example.
+  The request shape is implemented and unit-tested; if Meta rejects that
+  combination for your app/account, the record will show `failed` with
+  Meta's error and no link will be sent. Verify this in Step 7 before
+  announcing the keyword publicly.
 - Messages to people who don't follow you may land in **Message requests**.
 - Rate limit for private replies to post/Reel comments: **750/hour per
   account** — far above what one account normally needs.
 - Without `DATABASE_URL` on a serverless host, dedupe state lives in
   `/tmp` and can be lost between invocations; the dashboard warns about
   this. Meta's own one-reply-per-comment rule is the last line of defence.
-- The app sends no public comment replies. Its private reply is
-  follower-gated, but verification is limited by Meta: the User Profile API
+- The app sends no public comment replies. Both follow checks use the same
+  Meta field, but verification is limited by Meta: the User Profile API
   uses an Instagram-scoped ID and requires profile-access consent. Consent
   is granted when the user messages your professional account or uses an
   icebreaker/persistent menu; **commenting alone does not grant it**.
-  Consequently, a genuine follower who has never messaged you may be
-  recorded as “follow unverified” and receive nothing. The app intentionally
-  fails closed rather than guessing. Official references:
-  [User Profile API](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/messaging-api/user-profile)
-  and [Private Replies](https://developers.facebook.com/documentation/instagram-platform/private-replies).
+  Consequently, a genuine follower who has never messaged you may fail
+  check #1 as “follow unverified” and receive nothing — that is the
+  requested strict behaviour, and the app never guesses. Official
+  references: [User Profile API](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/messaging-api/user-profile),
+  [Private Replies](https://developers.facebook.com/documentation/instagram-platform/private-replies),
+  and [Quick Replies](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/messaging-api/quick-replies).
 - Comment text and usernames are stored (needed for the dashboard and
   dedupe). Files: local mode caps at the newest 500 records; delete rows /
   the data file whenever you want a clean slate.
@@ -318,10 +353,11 @@ Files:
 |---|---|
 | "Verify and save" fails in Meta | App not deployed yet; wrong callback URL (must be `https://YOUR-DOMAIN/api/webhook`); verify token mismatch with `META_WEBHOOK_VERIFY_TOKEN`. |
 | No events arrive | `comments` field not subscribed; `npm run ig:subscribe` not run; account is private/personal; token was generated before adding the comment/message permissions (regenerate it). |
+| Prompt arrives but tapping the button does nothing | `messages` / `messaging_postbacks` webhook fields not subscribed (dashboard + `npm run ig:subscribe`); check the dashboard row — `follow_prompt_sent` means check #2 returned false/unverified, so follow and tap **Try again**. |
 | `403 Invalid signature` in logs | `META_APP_SECRET` doesn't match the app that sends the webhooks. |
 | DM status `failed` + code 190 / 463 | Token expired/invalid — refresh or regenerate, update env, redeploy. |
 | DM status `failed` + permission error | Token lacks `instagram_business_manage_messages` — add the permission, regenerate the token. |
-| “Not following — no DM” | Working as intended: Meta returned `is_user_follow_business=false`. Ask the person to follow and make a new keyword comment. |
-| “Follow unverified — no DM” | Meta did not return a boolean, commonly because the commenter has not previously messaged your account to grant profile consent. The app sends nothing. Check Detail for Meta's error; token/permission problems can also appear here. |
+| “Not following — no DM” at the comment stage | Working as intended: check #1 returned `is_user_follow_business=false`, so no prompt was sent. The person must follow and make a new keyword comment. (After a prompt, a false check #2 instead sends the follow-and-Try-again message.) |
+| “Follow unverified — no DM” at the comment stage | Check #1 could not obtain a boolean, commonly because the commenter has not previously messaged your account to grant profile consent. The app sends nothing. Check Detail for Meta's error; token/permission problems can also appear here. |
 | Duplicate test comments all say `duplicates: 1` | Working as intended — that comment id was already claimed. Use a new comment (or new `-- id` in simulate). |
 | Dashboard shows old data after redeploy on Vercel | `DATABASE_URL` missing → ephemeral `/tmp` store. Add Postgres. |

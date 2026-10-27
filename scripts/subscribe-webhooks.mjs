@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Subscribes YOUR Instagram account to this app's webhooks (comments field).
- * Without this one-time call Meta will not deliver comment events, even if
+ * Subscribes YOUR Instagram account to this app's webhooks.
+ * Without this one-time call Meta will not deliver comment/message events, even if
  * the webhook itself is configured in the app dashboard.
  *
  *   POST https://graph.instagram.com/<version>/me/subscribed_apps
- *        ?subscribed_fields=comments
+ *        ?subscribed_fields=comments,messages,messaging_postbacks
  *
  * Reads IG_ACCESS_TOKEN from the environment or .env.local. The token is
  * never printed.
@@ -34,7 +34,8 @@ if (!token) {
 }
 
 const version = process.env.META_GRAPH_VERSION || 'v25.0';
-const url = `https://graph.instagram.com/${version}/me/subscribed_apps?subscribed_fields=comments`;
+const fields = new URLSearchParams({ subscribed_fields: 'comments,messages,messaging_postbacks' });
+const url = `https://graph.instagram.com/${version}/me/subscribed_apps?${fields}`;
 const response = await fetch(url, {
   method: 'POST',
   headers: { Authorization: `Bearer ${token}` },

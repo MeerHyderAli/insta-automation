@@ -1,5 +1,11 @@
+export const GET_LINK_PAYLOAD = 'GET_LINK_V1';
+
 export type DmStatus =
   | 'processing'
+  | 'checking_follow'
+  | 'prompt_sent'
+  | 'follow_prompt_sent'
+  | 'link_sent'
   | 'sent'
   | 'failed'
   | 'not_matched'
@@ -12,6 +18,7 @@ export type FollowStatus = 'following' | 'not_following' | 'unverified' | 'not_c
 
 export interface CommentRecord {
   commentId: string;
+  commenterId: string | null;
   igAccountId: string | null;
   mediaId: string | null;
   username: string | null;
@@ -20,13 +27,23 @@ export interface CommentRecord {
   followStatus: FollowStatus;
   dmStatus: DmStatus;
   dmMessageId: string | null;
+  lastClickEventId: string | null;
   error: string | null;
   /** ISO-8601 */
   receivedAt: string;
 }
 
 export type CommentPatch = Partial<
-  Pick<CommentRecord, 'dmStatus' | 'matchedKeyword' | 'followStatus' | 'dmMessageId' | 'error'>
+  Pick<
+    CommentRecord,
+    | 'commenterId'
+    | 'dmStatus'
+    | 'matchedKeyword'
+    | 'followStatus'
+    | 'dmMessageId'
+    | 'lastClickEventId'
+    | 'error'
+  >
 >;
 
 export interface ParsedComment {
@@ -40,10 +57,23 @@ export interface ParsedComment {
   timestamp: number | null;
 }
 
+export interface ParsedMessageEvent {
+  /** Meta message/postback id, or a deterministic fallback for dedupe. */
+  eventId: string;
+  igAccountId: string | null;
+  senderId: string;
+  recipientId: string | null;
+  payload: string | null;
+  text: string;
+  kind: 'quick_reply' | 'postback' | 'text';
+  /** Unix milliseconds from the messaging event, when present. */
+  timestamp: number | null;
+}
+
 export interface ProcessSummary {
   received: number;
   matched: number;
-  sent: number;
+  promptSent: number;
   dryRun: number;
   notMatched: number;
   failed: number;
@@ -52,4 +82,16 @@ export interface ProcessSummary {
   skippedOtherAccount: number;
   skippedNotFollowing: number;
   skippedFollowUnverified: number;
+}
+
+export interface MessageProcessSummary {
+  received: number;
+  clicks: number;
+  linkSent: number;
+  followPromptSent: number;
+  duplicates: number;
+  ignored: number;
+  noPending: number;
+  failed: number;
+  dryRun: number;
 }

@@ -11,46 +11,60 @@ export class InstagramApiError extends Error {
   }
 }
 
-export interface SendPrivateReplyInput {
+export interface QuickReplyInput {
+  title: string;
+  payload: string;
+}
+
+interface BaseSendMessageInput {
   /** Your Instagram professional account id (webhook entry.id), or "me". */
   igAccountId: string;
-  commentId: string;
   message: string;
+  quickReplies?: QuickReplyInput[];
   accessToken: string;
   graphVersion?: string;
   fetchFn?: typeof fetch;
   timeoutMs?: number;
 }
 
-export interface SendPrivateReplyResult {
+export interface SendPrivateReplyInput extends BaseSendMessageInput {
+  commentId: string;
+}
+
+export interface SendUserMessageInput extends BaseSendMessageInput {
+  recipientId: string;
+}
+
+export interface SendMessageResult {
   messageId: string | null;
   recipientId: string | null;
 }
+
+export type SendPrivateReplyResult = SendMessageResult;
 
 function redact(text: string, secret: string): string {
   return secret ? text.split(secret).join('[REDACTED]') : text;
 }
 
-/**
- * Sends the one private reply Meta allows for a comment.
- *
- * POST https://graph.instagram.com/<version>/<IG_USER_ID>/messages
- *   { "recipient": { "comment_id": "<COMMENT_ID>" },
- *     "message":   { "text": "..." } }
- * -> { "recipient_id": "...", "message_id": "..." }
- *
- * Rules from Meta's docs: at most one message per comment, within 7 days
- * of the comment (for Live, only during the broadcast). Delivery is only
- * treated as confirmed when this call succeeds.
- */
-export async function sendPrivateReply(
-  input: SendPrivateReplyInput,
-): Promise<SendPrivateReplyResult> {
+type Recipient = { comment_id: string } | { id: string };
+
+async function postInstagramMessage(
+  input: BaseSendMessageInput & { recipient: Recipient },
+): Promise<SendMessageResult> {
   const version = normalizeGraphVersion(input.graphVersion);
   const url = `https://graph.instagram.com/${version}/${encodeURIComponent(input.igAccountId)}/messages`;
   const fetchFn = input.fetchFn ?? fetch;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? 10_000);
+
+  const message: Record<string, unknown> = { text: input.message };
+  if (input.quickReplies?.length) {
+    message.quick_replies = input.quickReplies.map((quickReply) => ({
+      content_type: 'text',
+      title: quickReply.title.slice(0, 20),
+      payload: quickReply.payload,
+    }));
+  }
 
   let response: Response;
   try {
@@ -60,18 +74,15 @@ export async function sendPrivateReply(
         Authorization: `Bearer ${input.accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        recipient: { comment_id: input.commentId },
-        message: { text: input.message },
-      }),
+      body: JSON.stringify({ recipient: input.recipient, message }),
       signal: controller.signal,
     });
   } catch (error) {
-    const message =
+    const messageText =
       error instanceof Error && error.name === 'AbortError'
         ? 'Instagram API request timed out'
         : 'Could not reach the Instagram API';
-    throw new InstagramApiError(message, 0);
+    throw new InstagramApiError(messageText, 0);
   } finally {
     clearTimeout(timeout);
   }
@@ -105,8 +116,35 @@ export async function sendPrivateReply(
   };
 }
 
+/**
+ * Sends the one private reply Meta allows for a comment. In this app that
+ * first message is the thank-you prompt with a quick-reply button.
+ */
+export async function sendPrivateReply(
+  input: SendPrivateReplyInput,
+): Promise<SendPrivateReplyResult> {
+  return postInstagramMessage({
+    ...input,
+    recipient: { comment_id: input.commentId },
+  });
+}
+
+/**
+ * Sends a normal conversation message to an IGSID. This is used only after
+ * the user taps the prompt button / sends a message, which opens the
+ * standard messaging window for the follow-up.
+ */
+export async function sendMessageToUser(
+  input: SendUserMessageInput,
+): Promise<SendMessageResult> {
+  return postInstagramMessage({
+    ...input,
+    recipient: { id: input.recipientId },
+  });
+}
+
 export interface GetUserFollowStatusInput {
-  /** Instagram-scoped ID (IGSID) for the commenter. */
+  /** Instagram-scoped ID (IGSID) for the commenter/message sender. */
   igsid: string;
   accessToken: string;
   graphVersion?: string;
@@ -134,15 +172,8 @@ function followCheckError(payload: Record<string, unknown>, status: number, toke
 
 /**
  * Reads the official `is_user_follow_business` profile field for an IGSID.
- *
- * GET https://graph.instagram.com/<version>/<IGSID>
- *   ?fields=is_user_follow_business
- *
- * Meta only guarantees profile access after the user has granted messaging
- * consent (for example by messaging the professional account). A comment by
- * itself does not grant that consent. This function therefore returns
- * `unverified` for API/consent errors and missing/non-boolean data instead
- * of guessing whether the person follows the account.
+ * Returns `unverified` for consent/API errors and missing/non-boolean data
+ * instead of guessing whether the person follows the account.
  */
 export async function getUserFollowStatus(
   input: GetUserFollowStatusInput,

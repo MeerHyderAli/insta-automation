@@ -53,12 +53,30 @@ describe('parseKeywords', () => {
 
 
 describe('follow gate config', () => {
-  it('requires a verified follow by default', () => {
-    expect(getConfig({}).requireFollow).toBe(true);
-    expect(getConfig({ REQUIRE_FOLLOW_TO_SEND: 'true' }).requireFollow).toBe(true);
+  it('enables both follow checks by default', () => {
+    expect(getConfig({})).toMatchObject({
+      requireFollowBeforePrompt: true,
+      requireFollowForLink: true,
+    });
   });
 
-  it('allows an explicit local-testing opt-out', () => {
-    expect(getConfig({ REQUIRE_FOLLOW_TO_SEND: 'false' }).requireFollow).toBe(false);
+  it('treats legacy REQUIRE_FOLLOW_TO_SEND as the fallback for both checks', () => {
+    expect(getConfig({ REQUIRE_FOLLOW_TO_SEND: 'false' })).toMatchObject({
+      requireFollowBeforePrompt: false,
+      requireFollowForLink: false,
+    });
+  });
+
+  it('lets the specific second-check flag override the legacy flag', () => {
+    expect(
+      getConfig({ REQUIRE_FOLLOW_TO_SEND: 'true', REQUIRE_FOLLOW_FOR_LINK: 'false' }),
+    ).toMatchObject({ requireFollowBeforePrompt: true, requireFollowForLink: false });
+  });
+
+  it('provides the two-step message defaults and caps button titles at 20 chars', () => {
+    const config = getConfig({ GET_LINK_BUTTON_TEXT: 'Click here to get the link please' });
+    expect(config.introMessage).toContain('Thanks for commenting');
+    expect(config.getLinkButtonText).toHaveLength(20);
+    expect(config.tryAgainButtonText).toBe('Try again');
   });
 });

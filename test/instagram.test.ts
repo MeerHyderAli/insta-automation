@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { getUserFollowStatus, InstagramApiError, sendPrivateReply } from '../lib/instagram';
+import {
+  getUserFollowStatus,
+  InstagramApiError,
+  sendMessageToUser,
+  sendPrivateReply,
+} from '../lib/instagram';
 
 describe('sendPrivateReply', () => {
   it('posts a private reply to the Graph API and returns the message id', async () => {
@@ -134,5 +139,59 @@ describe('getUserFollowStatus', () => {
     });
 
     expect(result.status).toBe('unverified');
+  });
+});
+
+
+describe('two-step message payloads', () => {
+  it('adds a quick-reply button to the private prompt', async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ recipient_id: 'user-9', message_id: 'prompt-1' }), {
+        status: 200,
+      }),
+    );
+
+    await sendPrivateReply({
+      igAccountId: 'ig-1',
+      commentId: 'comment-1',
+      message: 'Thanks for commenting!',
+      quickReplies: [{ title: 'Click to get link', payload: 'GET_LINK_V1' }],
+      accessToken: 'secret-token',
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+
+    const [, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      recipient: { comment_id: 'comment-1' },
+      message: {
+        text: 'Thanks for commenting!',
+        quick_replies: [
+          { content_type: 'text', title: 'Click to get link', payload: 'GET_LINK_V1' },
+        ],
+      },
+    });
+  });
+
+  it('sends a follow-up conversation message to the sender IGSID', async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ recipient_id: 'user-9', message_id: 'link-1' }), {
+        status: 200,
+      }),
+    );
+
+    const result = await sendMessageToUser({
+      igAccountId: 'ig-1',
+      recipientId: 'user-9',
+      message: 'Here is your link: https://example.com',
+      accessToken: 'secret-token',
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(result).toEqual({ messageId: 'link-1', recipientId: 'user-9' });
+    const [, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      recipient: { id: 'user-9' },
+      message: { text: 'Here is your link: https://example.com' },
+    });
   });
 });

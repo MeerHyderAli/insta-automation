@@ -6,6 +6,15 @@ import path from 'node:path';
  */
 export const DEFAULT_KEYWORDS = ['link', 'links', 'lnik', 'likn', 'lnk', 'liink', 'linkk'];
 
+export const DEFAULT_INTRO_DM_MESSAGE =
+  'Thanks for commenting, {username}! Tap the button below to get your link.';
+export const DEFAULT_NOT_FOLLOWING_MESSAGE =
+  'You are not following this account yet. Please follow first, then tap “Try again” below to get your link.';
+export const DEFAULT_FOLLOW_UNVERIFIED_MESSAGE =
+  'I could not verify your follow status yet. Please make sure you follow this account, then tap “Try again” below.';
+export const DEFAULT_GET_LINK_BUTTON_TEXT = 'Click to get link';
+export const DEFAULT_TRY_AGAIN_BUTTON_TEXT = 'Try again';
+
 export interface AppConfig {
   accessToken: string | null;
   appSecret: string | null;
@@ -13,8 +22,14 @@ export interface AppConfig {
   graphVersion: string;
   igAccountId: string | null;
   keywords: string[];
+  introMessage: string;
   dmMessage: string | null;
-  requireFollow: boolean;
+  notFollowingMessage: string;
+  followUnverifiedMessage: string;
+  getLinkButtonText: string;
+  tryAgainButtonText: string;
+  requireFollowBeforePrompt: boolean;
+  requireFollowForLink: boolean;
   dryRun: boolean;
   databaseUrl: string | null;
   dataFile: string;
@@ -33,6 +48,22 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
   if (['true', '1', 'yes', 'on'].includes(value)) return true;
   if (['false', '0', 'no', 'off'].includes(value)) return false;
   return fallback;
+}
+
+function parseBooleanFrom(env: Env, keys: string[], fallback: boolean): boolean {
+  for (const key of keys) {
+    if (clean(env[key])) return parseBoolean(env[key], fallback);
+  }
+  return fallback;
+}
+
+function cleanOrDefault(raw: string | undefined, fallback: string): string {
+  return clean(raw) ?? fallback;
+}
+
+function buttonText(raw: string | undefined, fallback: string): string {
+  // Instagram truncates quick-reply titles after 20 characters.
+  return cleanOrDefault(raw, fallback).slice(0, 20);
 }
 
 export function normalizeGraphVersion(raw: string | null | undefined): string {
@@ -68,11 +99,31 @@ export function getConfig(env: Env = process.env): AppConfig {
     graphVersion: normalizeGraphVersion(env.META_GRAPH_VERSION),
     igAccountId: clean(env.IG_ACCOUNT_ID),
     keywords: parseKeywords(env.COMMENT_KEYWORDS),
+    introMessage: cleanOrDefault(env.INTRO_DM_MESSAGE, DEFAULT_INTRO_DM_MESSAGE),
     dmMessage: clean(env.DM_MESSAGE),
-    // Follower-only is the product rule requested for this app. It can be
-    // disabled explicitly for local pipeline testing, but missing config must
-    // never silently allow replies to non-followers.
-    requireFollow: parseBoolean(env.REQUIRE_FOLLOW_TO_SEND, true),
+    notFollowingMessage: cleanOrDefault(
+      env.NOT_FOLLOWING_MESSAGE,
+      DEFAULT_NOT_FOLLOWING_MESSAGE,
+    ),
+    followUnverifiedMessage: cleanOrDefault(
+      env.FOLLOW_UNVERIFIED_MESSAGE,
+      DEFAULT_FOLLOW_UNVERIFIED_MESSAGE,
+    ),
+    getLinkButtonText: buttonText(env.GET_LINK_BUTTON_TEXT, DEFAULT_GET_LINK_BUTTON_TEXT),
+    tryAgainButtonText: buttonText(env.TRY_AGAIN_BUTTON_TEXT, DEFAULT_TRY_AGAIN_BUTTON_TEXT),
+    // The follow status is intentionally checked twice. The specific flags
+    // win, while REQUIRE_FOLLOW_TO_SEND remains supported as the legacy
+    // master switch for deployments created before the two-step flow.
+    requireFollowBeforePrompt: parseBooleanFrom(
+      env,
+      ['REQUIRE_FOLLOW_BEFORE_PROMPT', 'REQUIRE_FOLLOW_TO_SEND'],
+      true,
+    ),
+    requireFollowForLink: parseBooleanFrom(
+      env,
+      ['REQUIRE_FOLLOW_FOR_LINK', 'REQUIRE_FOLLOW_TO_SEND'],
+      true,
+    ),
     dryRun: parseBoolean(env.DRY_RUN, false),
     databaseUrl: clean(env.DATABASE_URL),
     dataFile,
@@ -85,11 +136,17 @@ export function getConfigStatus(config: AppConfig) {
     accessTokenConfigured: Boolean(config.accessToken),
     appSecretConfigured: Boolean(config.appSecret),
     verifyTokenConfigured: Boolean(config.verifyToken),
+    introMessageConfigured: Boolean(config.introMessage),
     dmMessageConfigured: Boolean(config.dmMessage),
     igAccountIdConfigured: Boolean(config.igAccountId),
     graphVersion: config.graphVersion,
     keywords: config.keywords,
-    requireFollow: config.requireFollow,
+    getLinkButtonText: config.getLinkButtonText,
+    tryAgainButtonText: config.tryAgainButtonText,
+    requireFollowBeforePrompt: config.requireFollowBeforePrompt,
+    requireFollowForLink: config.requireFollowForLink,
+    // Deprecated health alias: true only when both checks are enabled.
+    requireFollow: config.requireFollowBeforePrompt && config.requireFollowForLink,
     dryRun: config.dryRun,
     storage: config.databaseUrl ? 'postgres' : 'file',
     storageDurable: Boolean(config.databaseUrl),

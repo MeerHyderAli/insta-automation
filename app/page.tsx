@@ -6,6 +6,10 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const STATUS_LABEL: Record<DmStatus, string> = {
+  prompt_sent: 'Thanks prompt sent',
+  checking_follow: 'Checking follow…',
+  follow_prompt_sent: 'Follow prompt sent',
+  link_sent: 'Link sent',
   sent: 'DM sent',
   failed: 'DM failed',
   not_matched: 'No keyword',
@@ -51,7 +55,12 @@ export default async function DashboardPage() {
     storeError = error instanceof Error ? error.message : 'Could not read the comment store';
   }
 
-  const sent = records.filter((record) => record.dmStatus === 'sent').length;
+  const linkSent = records.filter(
+    (record) => record.dmStatus === 'link_sent' || record.dmStatus === 'sent',
+  ).length;
+  const waiting = records.filter((record) =>
+    ['prompt_sent', 'follow_prompt_sent', 'checking_follow'].includes(record.dmStatus),
+  ).length;
   const matched = records.filter((record) => record.matchedKeyword).length;
   const failed = records.filter((record) => record.dmStatus === 'failed').length;
 
@@ -63,9 +72,8 @@ export default async function DashboardPage() {
           <div>
             <div className="title">Comment-to-DM</div>
             <div className="subtitle">
-              {status.requireFollow
-                ? 'Keyword comments from verified followers get one private reply with your link.'
-                : 'Keyword comments on your posts/Reels get one private reply with your link.'}
+              Keyword comments are follow-checked, receive a thanks prompt with a button,
+              then are follow-checked again before the link is sent.
             </div>
           </div>
         </div>
@@ -82,11 +90,12 @@ export default async function DashboardPage() {
         </div>
       ) : null}
 
-      {status.requireFollow ? (
+      {status.requireFollowBeforePrompt || status.requireFollowForLink ? (
         <div className="banner banner-warn">
-          <strong>Follower-only mode is on.</strong> A reply is sent only when Meta returns{' '}
-          <code>is_user_follow_business=true</code>. If Meta cannot verify the follow status,
-          the app fails closed and sends nothing.
+          <strong>Double follow check:</strong> check #1 runs before the thanks prompt;
+          check #2 runs again after the <code>{status.getLinkButtonText}</code> button tap.
+          The link is sent only when Meta returns <code>is_user_follow_business=true</code>{' '}
+          at the second check.
         </div>
       ) : null}
 
@@ -115,8 +124,12 @@ export default async function DashboardPage() {
           <div className="stat-label">Keyword matches</div>
         </div>
         <div className="stat">
-          <div className="stat-value">{sent}</div>
-          <div className="stat-label">DMs confirmed sent</div>
+          <div className="stat-value">{linkSent}</div>
+          <div className="stat-label">Links delivered</div>
+        </div>
+        <div className="stat">
+          <div className="stat-value">{waiting}</div>
+          <div className="stat-label">Waiting for button tap</div>
         </div>
         <div className="stat">
           <div className="stat-value">{failed}</div>
@@ -156,15 +169,24 @@ export default async function DashboardPage() {
           <li>
             <StatusDot state={status.dmMessageConfigured ? 'ok' : 'missing'} />
             <span>
-              DM message + link {status.dmMessageConfigured ? 'configured' : 'missing'}{' '}
+              Final link message {status.dmMessageConfigured ? 'configured' : 'missing'}{' '}
               <span className="muted">(<code>DM_MESSAGE</code>)</span>
             </span>
           </li>
           <li>
-            <StatusDot state={status.requireFollow ? 'ok' : 'warn'} />
+            <StatusDot state={status.requireFollowBeforePrompt ? 'ok' : 'warn'} />
             <span>
-              Follower gate: {status.requireFollow ? 'enabled (verified followers only)' : 'disabled'}{' '}
-              <span className="muted">(<code>REQUIRE_FOLLOW_TO_SEND</code>)</span>
+              Follow check #1 (before prompt):{' '}
+              {status.requireFollowBeforePrompt ? 'enabled' : 'disabled'}{' '}
+              <span className="muted">(<code>REQUIRE_FOLLOW_BEFORE_PROMPT</code>)</span>
+            </span>
+          </li>
+          <li>
+            <StatusDot state={status.requireFollowForLink ? 'ok' : 'warn'} />
+            <span>
+              Follow check #2 (after button tap):{' '}
+              {status.requireFollowForLink ? 'enabled' : 'disabled'}{' '}
+              <span className="muted">(<code>REQUIRE_FOLLOW_FOR_LINK</code>)</span>
             </span>
           </li>
           <li>
@@ -211,7 +233,7 @@ export default async function DashboardPage() {
                   <th>Commenter</th>
                   <th>Comment</th>
                   <th>Keyword</th>
-                  <th>Follow check</th>
+                  <th>Latest follow check</th>
                   <th>DM</th>
                   <th>Detail</th>
                 </tr>
@@ -234,10 +256,10 @@ export default async function DashboardPage() {
                       </span>
                     </td>
                     <td className="small muted">
-                      {record.dmStatus === 'sent' && record.dmMessageId
-                        ? `Message ${record.dmMessageId}`
-                        : record.error
-                          ? record.error
+                      {record.error
+                        ? record.error
+                        : record.dmMessageId
+                          ? `Message ${record.dmMessageId}`
                           : `Comment ${record.commentId}`}
                     </td>
                   </tr>
@@ -249,10 +271,9 @@ export default async function DashboardPage() {
       </section>
 
       <footer className="footer">
-        One private reply per comment is enforced twice: by Meta, and by this app claiming each
-        comment id before sending. In follower-only mode, “DM sent” additionally requires Meta to
-        verify the commenter as a follower first; unverified commenters receive nothing. “DM sent”
-        is only shown when the Instagram API confirmed the send with a message id.
+        Each keyword comment can receive one private-reply prompt. Follow status is checked
+        before that prompt and checked again after the button tap; “Link sent” is shown only when
+        the second check passes and Instagram confirms the follow-up message with a message id.
       </footer>
     </main>
   );

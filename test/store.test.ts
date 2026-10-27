@@ -8,6 +8,7 @@ import type { CommentRecord } from '../lib/types';
 function makeRecord(commentId: string, receivedAt: string): CommentRecord {
   return {
     commentId,
+    commenterId: 'user-9',
     igAccountId: 'ig-1',
     mediaId: 'media-1',
     username: 'alice',
@@ -16,6 +17,7 @@ function makeRecord(commentId: string, receivedAt: string): CommentRecord {
     followStatus: 'not_checked',
     dmStatus: 'processing',
     dmMessageId: null,
+    lastClickEventId: null,
     error: null,
     receivedAt,
   };
@@ -42,5 +44,22 @@ describe('FileCommentStore', () => {
     expect(list.map((record) => record.commentId)).toEqual(['comment-2', 'comment-1']);
     expect(list[1].dmStatus).toBe('sent');
     expect(list[1].dmMessageId).toBe('mid-1');
+  });
+});
+
+
+describe('FileCommentStore click claiming', () => {
+  it('finds the latest pending prompt and claims each click only once', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'comment-store-'));
+    const store = new FileCommentStore(path.join(dir, 'comments.json'));
+    const record = makeRecord('comment-9', '2026-10-17T12:00:00.000Z');
+    await store.tryClaim(record);
+    await store.update('comment-9', { dmStatus: 'prompt_sent' });
+
+    expect((await store.findLatestPendingByCommenterId('user-9'))?.commentId).toBe('comment-9');
+    const claimed = await store.tryClaimClick('comment-9', 'click-1');
+    expect(claimed).toMatchObject({ dmStatus: 'checking_follow', lastClickEventId: 'click-1' });
+    expect(await store.tryClaimClick('comment-9', 'click-1')).toBeNull();
+    expect(await store.findLatestPendingByCommenterId('user-9')).toBeNull();
   });
 });

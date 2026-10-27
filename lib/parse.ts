@@ -1,4 +1,4 @@
-import type { ParsedComment } from './types';
+import type { ParsedComment, ParsedMessageEvent } from './types';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -30,14 +30,12 @@ export function isInstagramWebhook(payload: unknown): boolean {
  *       field: "comments",
  *       value: {
  *         id: "<comment id>", text: "LINK please",
- *         from: { id: "<commenter id>", username: "alice" },
+ *         from: { id: "<commenter IGSID>", username: "alice" },
  *         media: { id: "<media id>", media_product_type: "FEED" }
  *       }
  *     }]
  *   }]
  * }
- *
- * Non-comment fields (messages, mentions, ...) are ignored.
  */
 export function parseCommentEvents(payload: unknown): ParsedComment[] {
   const root = asRecord(payload);
@@ -55,7 +53,7 @@ export function parseCommentEvents(payload: unknown): ParsedComment[] {
       const change = asRecord(rawChange);
       if (!change || change.field !== 'comments') continue;
       const value = asRecord(change.value);
-      const commentId = asString(value?.id);
+      const commentId = asString(value?.id) ?? asString(value?.comment_id);
       if (!value || !commentId) continue;
 
       const from = asRecord(value.from);
@@ -73,4 +71,62 @@ export function parseCommentEvents(payload: unknown): ParsedComment[] {
   }
 
   return comments;
+}
+
+/**
+ * Extracts user messaging interactions (quick-reply taps, postbacks and
+ * ordinary text) from `entry[].messaging[]`. Echoes of messages sent by the
+ * professional account are ignored.
+ */
+export function parseMessageEvents(payload: unknown): ParsedMessageEvent[] {
+  const root = asRecord(payload);
+  const entries = Array.isArray(root?.entry) ? root.entry : [];
+  const events: ParsedMessageEvent[] = [];
+
+  for (const rawEntry of entries) {
+    const entry = asRecord(rawEntry);
+    if (!entry) continue;
+    const igAccountId = asString(entry.id);
+    const messaging = Array.isArray(entry.messaging) ? entry.messaging : [];
+
+    for (const rawEvent of messaging) {
+      const event = asRecord(rawEvent);
+      if (!event) continue;
+
+      const senderId = asString(asRecord(event.sender)?.id);
+      if (!senderId) continue;
+
+      const message = asRecord(event.message);
+      const postback = asRecord(event.postback);
+      if (!message && !postback) continue;
+      if (message?.is_echo === true || message?.is_deleted === true) continue;
+
+      const quickReply = asRecord(message?.quick_reply);
+      const payloadValue = asString(quickReply?.payload) ?? asString(postback?.payload);
+      const text =
+        typeof message?.text === 'string'
+          ? message.text
+          : typeof postback?.title === 'string'
+            ? postback.title
+            : '';
+      const timestamp = typeof event.timestamp === 'number' ? event.timestamp : null;
+      const eventId =
+        asString(message?.mid) ??
+        asString(postback?.mid) ??
+        `${senderId}:${timestamp ?? 'unknown'}:${payloadValue ?? text}`;
+
+      events.push({
+        eventId,
+        igAccountId,
+        senderId,
+        recipientId: asString(asRecord(event.recipient)?.id),
+        payload: payloadValue,
+        text,
+        kind: quickReply ? 'quick_reply' : postback ? 'postback' : 'text',
+        timestamp,
+      });
+    }
+  }
+
+  return events;
 }
