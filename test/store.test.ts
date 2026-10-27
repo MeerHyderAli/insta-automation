@@ -18,6 +18,9 @@ function makeRecord(commentId: string, receivedAt: string): CommentRecord {
     followStatus: 'not_checked',
     dmStatus: 'processing',
     dmMessageId: null,
+    commentReplyStatus: 'not_sent',
+    commentReplyId: null,
+    commentReplyError: null,
     lastClickEventId: null,
     error: null,
     receivedAt,
@@ -39,12 +42,24 @@ describe('FileCommentStore', () => {
     const store = new FileCommentStore(path.join(dir, 'comments.json'));
     await store.tryClaim(makeRecord('comment-1', '2026-10-17T10:00:00.000Z'));
     await store.tryClaim(makeRecord('comment-2', '2026-10-17T11:00:00.000Z'));
-    await store.update('comment-1', { dmStatus: 'sent', dmMessageId: 'mid-1' });
+    await store.update('comment-1', {
+      dmStatus: 'sent',
+      dmMessageId: 'mid-1',
+      commentReplyStatus: 'sent',
+      commentReplyId: 'public-reply-1',
+      commentReplyError: null,
+    });
 
     const list = await store.list(50);
     expect(list.map((record) => record.commentId)).toEqual(['comment-2', 'comment-1']);
     expect(list[1].dmStatus).toBe('sent');
     expect(list[1].dmMessageId).toBe('mid-1');
+    expect(list[1].commentReplyStatus).toBe('sent');
+    expect(list[1].commentReplyId).toBe('public-reply-1');
+    expect((await store.findRecordByCommentReplyId('public-reply-1'))?.commentId).toBe(
+      'comment-1',
+    );
+    expect(await store.findRecordByCommentReplyId('unknown-reply')).toBeNull();
   });
 });
 

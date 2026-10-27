@@ -13,8 +13,9 @@ export default function PrivacyPage() {
         Comment-to-DM is a single-purpose automation operated for the Instagram professional
         account connected to this deployment. When a person comments on that account’s media,
         the app can check whether the person follows the account, send a private-reply prompt,
-        repeat the follow check after the person taps the prompt, and then send the resource
-        link configured for that Reel or post.
+        post a related public reply under the triggering comment, repeat the follow check after
+        the person taps the prompt, and then send the resource link configured for that Reel or
+        post.
       </p>
 
       <h2>Information processed</h2>
@@ -27,7 +28,8 @@ export default function PrivacyPage() {
         </li>
         <li>
           The result of each follow-status check, the message-delivery stage, Meta message IDs,
-          and sanitized API error messages needed for troubleshooting.
+          public comment-reply status and reply comment IDs, and sanitized API error messages
+          needed for troubleshooting and to prevent the app from replying to its own replies.
         </li>
         <li>
           Webhook diagnostic metadata such as receipt time, signature-validation result, payload
@@ -49,7 +51,10 @@ export default function PrivacyPage() {
       <ul>
         <li>To detect a new comment and avoid processing the same comment more than once.</li>
         <li>To verify follow status before the first prompt and again before sending a link.</li>
-        <li>To send the prompt, retry message, or configured resource link through Meta’s APIs.</li>
+        <li>
+          To send the prompt, retry message, or configured resource link and post the related
+          public comment reply through Meta’s APIs.
+        </li>
         <li>To show the account operator recent comment and delivery status in the dashboard.</li>
         <li>To diagnose webhook delivery, parser, storage, and Meta API failures.</li>
       </ul>
@@ -57,7 +62,8 @@ export default function PrivacyPage() {
       <h2>Sharing and service providers</h2>
       <p>
         Information is sent to Meta/Instagram as necessary to receive webhooks, check follow
-        status, and send messages. The app also relies on the hosting and database providers
+        status, send messages, and post public comment replies. The app also relies on the
+        hosting and database providers
         chosen by its operator to run and store the application. Those providers process data
         only as needed to provide their infrastructure services. Public comments and Instagram
         messages remain subject to Instagram’s and Meta’s own terms and privacy practices.

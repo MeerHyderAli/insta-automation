@@ -119,6 +119,9 @@ export function parseCommentEvents(payload: unknown): ParsedComment[] {
           asString(from?.id) ?? asString(value.sender_id) ?? asString(value.from),
         username: asString(from?.username) ?? asString(value.username),
         text: typeof value.text === 'string' ? value.text : '',
+        parentId: asString(value.parent_id) ?? asString(value.parentId),
+        selfIgScopedId:
+          asString(from?.self_ig_scoped_id) ?? asString(value.self_ig_scoped_id),
         timestamp,
       });
     }

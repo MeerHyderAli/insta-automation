@@ -89,6 +89,33 @@ describe('follow gate config', () => {
 });
 
 
+describe('public comment reply config', () => {
+  it('enables public replies with accurate following/not-following/unverified defaults', () => {
+    const config = getConfig({});
+    expect(config.commentReplyEnabled).toBe(true);
+    expect(config.commentReplyFollowingMessage).toContain('check your DM');
+    expect(config.commentReplyFollowingMessage).not.toContain('link sent');
+    expect(config.commentReplyNotFollowingMessage).toContain('please follow');
+    expect(config.commentReplyUnverifiedMessage).toContain('verify your follow');
+  });
+
+  it('can disable public replies and customize their messages', () => {
+    const config = getConfig({
+      COMMENT_REPLY_ENABLED: 'false',
+      COMMENT_REPLY_FOLLOWING_MESSAGE: '{username} DM sent',
+      COMMENT_REPLY_NOT_FOLLOWING_MESSAGE: '{username} follow first',
+      COMMENT_REPLY_UNVERIFIED_MESSAGE: '{username} check DM',
+    });
+
+    expect(config).toMatchObject({
+      commentReplyEnabled: false,
+      commentReplyFollowingMessage: '{username} DM sent',
+      commentReplyNotFollowingMessage: '{username} follow first',
+      commentReplyUnverifiedMessage: '{username} check DM',
+    });
+  });
+});
+
 describe('comment match mode and per-Reel link config', () => {
   it('defaults to keyword mode with a link-template final message', () => {
     expect(getConfig({})).toMatchObject({

@@ -3,10 +3,11 @@
 A small [Next.js](https://nextjs.org/) app for **one Instagram professional account**.
 When someone comments on a post or Reel, the app verifies that the
 commenter follows you, sends a “Thanks for commenting” private reply with a
-**Click to get link** button, then verifies the follow **again** after the
-button tap before sending **that Reel/post's link** — using only the
-official Instagram API with Instagram Login. The trigger can be configured
-keywords or **any non-empty comment**.
+**Click to get link** button, posts a matching **public reply under the
+triggering comment**, then verifies the follow **again** after the button
+tap before sending **that Reel/post's link** — using only the official
+Instagram API with Instagram Login. The trigger can be configured keywords
+or **any non-empty comment**.
 
 - Webhook route (`/api/webhook`) verifies Meta's `X-Hub-Signature-256` and
   handles both `comments` events and messaging events (button taps).
@@ -30,18 +31,26 @@ keywords or **any non-empty comment**.
   messaged the account. Their button tap creates that messaging
   interaction, after which check #2 decides whether to send the link or a
   follow-and-retry prompt. Set the flag `false` for strict prompt gating.
+- **Public comment replies mirror the first outcome:** a verified follower
+  is told to check DM and tap the button; a positively identified
+  non-follower is publicly asked to follow first and comment again (and
+  receives no DM); an unverified comment-first user is told to check DM and
+  tap so the follow can be verified there—not falsely told that the link was
+  sent. Public-reply status/ID/errors are tracked separately, so a public
+  reply failure never undoes a successful DM prompt or changes check #2.
 - Every comment ID is stored **before** sending, and every button-tap
   event ID is claimed before handling, so Meta redeliveries cannot produce
   duplicate prompts or links.
 - The access token is read from an environment variable, server-side only —
   never hardcoded, never sent to the browser.
 - A dashboard page lists the **last 50 comments** with the latest follow
-  result and stage (prompt sent, waiting for tap, link sent, skipped, …),
+  result, DM stage, and separate public-reply status/detail,
   plus metadata-only **Webhook diagnostics** for the last five signed POST
   attempts (signature result, object/field names, and parsed counts).
 
-No scraping, no unofficial endpoints, no password login, no public replies —
-just the documented private-reply, quick-reply, and messaging flows.
+No scraping, no unofficial endpoints, and no password login — just Meta's
+documented private-reply, public comment-reply, quick-reply, and messaging
+flows.
 
 ---
 
@@ -97,7 +106,7 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 
 | Variable | Required | What it is |
 |---|---|---|
-| `IG_ACCESS_TOKEN` | for real DMs | Long-lived Instagram Login token for your professional account. Server-side only. Expires ~60 days (see token refresh). |
+| `IG_ACCESS_TOKEN` | for real sends | Long-lived Instagram Login token for your professional account. Server-side only. Expires ~60 days (see token refresh). |
 | `META_APP_SECRET` | yes | Meta app secret. Used to verify `X-Hub-Signature-256` on every webhook POST. |
 | `META_WEBHOOK_VERIFY_TOKEN` | yes | A long random string **you invent**, pasted into Meta's webhook config. |
 | `INTRO_DM_MESSAGE` | no | First private-reply prompt, sent after check #1 passes—or, in comment-first mode, when check #1 is unverified. Default: “Thanks for commenting, {username}! Tap the button below to get your link.” |
@@ -107,6 +116,10 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 | `DEFAULT_LINK_URL` | no | Optional fallback URL for media with no dashboard or `MEDIA_LINKS_JSON` entry. Leave unset if a new/unmapped Reel must receive nothing rather than a default link. |
 | `NOT_FOLLOWING_MESSAGE` / `FOLLOW_UNVERIFIED_MESSAGE` | no | Prompts sent when check #2 returns false/unverified. Each carries a Try again button so the user can follow and re-check without commenting again. |
 | `TRY_AGAIN_BUTTON_TEXT` | no | Retry button label. Default `Try again` (max 20 characters). |
+| `COMMENT_REPLY_ENABLED` | no | Public replies under triggering comments, default `true`. Uses `POST /<IG_COMMENT_ID>/replies` and requires `instagram_business_manage_comments`. Public-reply success/failure is tracked separately and never changes the DM/link result. Set `false` to disable. |
+| `COMMENT_REPLY_FOLLOWING_MESSAGE` | no | Public reply after check #1 verifies following **and** the DM prompt is sent. Default: “{username} check your DM 📩 Tap the button there to get your link.” It intentionally does not claim the link was already sent. |
+| `COMMENT_REPLY_NOT_FOLLOWING_MESSAGE` | no | Public reply when check #1 positively reports not following; no DM prompt is sent. Default asks the person to follow first and comment again. |
+| `COMMENT_REPLY_UNVERIFIED_MESSAGE` | no | Neutral public reply after an unverified/not-checked commenter receives the prompt. Default tells them to check DM and tap, where follow status is verified before any link. |
 | `REQUIRE_FOLLOW_BEFORE_PROMPT` | yes, keep `true` | Check #1, before the thanks prompt. False = no prompt; unverified follows the comment-first setting below. |
 | `PROMPT_UNVERIFIED_COMMENTERS` | no | Comment-first mode, default `true`. An unverified check #1 (common Meta profile-consent error 230 before the person has messaged you) still receives the button prompt. The tap then allows strict check #2; no link is sent unless check #2 verifies the follow. Set `false` to block unverified commenters before the prompt. |
 | `REQUIRE_FOLLOW_FOR_LINK` | yes, keep `true` | Check #2, after the button tap and before `DM_MESSAGE`. False/unverified = follow prompt, no link. |
@@ -114,7 +127,7 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 | `COMMENT_MATCH_MODE` | no | `keywords` (default) or `any`. In `any` mode every non-empty comment triggers, with at most one prompt/link flow per user per Reel/post. |
 | `COMMENT_KEYWORDS` | keywords mode | Comma-separated, case-insensitive, whole-word. Your keyword first, then typos. Default: `link,links,lnik,likn,lnk,liink,linkk` — change these to yours. Ignored in `any` mode. |
 | `DATABASE_URL` | on serverless | Postgres connection string for durable dedupe storage. **Required on Vercel.** Empty = local JSON file store. |
-| `DRY_RUN` | no | `true` = record matches but never call Instagram. Must be `false` in production. |
+| `DRY_RUN` | no | `true` = record matches but never call Instagram for a DM or public comment reply. Must be `false` in production. |
 | `IG_ACCOUNT_ID` | no | Your professional account id; if set, events for other accounts are ignored. |
 | `META_GRAPH_VERSION` | no | Default `v25.0`. Check Meta's changelog before changing. |
 | `DATA_FILE` | no | Local file store path (only when `DATABASE_URL` is empty). Default `./data/comments.json`. |
@@ -171,8 +184,9 @@ Under **Instagram → API setup with Instagram login**:
 
 1. Make sure these permissions are added:
    - `instagram_business_basic`
-   - `instagram_business_manage_comments` — receive `comments` webhooks /
-     read comments.
+   - `instagram_business_manage_comments` — receive `comments` webhooks,
+     read comments, and post the public reply through
+     `POST /<IG_COMMENT_ID>/replies`.
    - `instagram_business_manage_messages` — read the profile follow field,
      send the private-reply prompt, receive button taps, and send the link.
 2. Add/connect **your** Instagram professional account in the API setup page
@@ -250,17 +264,25 @@ This runs
    account is recorded as "Own comment" and never DMs you.) An unmapped Reel
    fails closed with “No link configured for media …” and nobody is prompted,
    so map it before the full public test.
-3. The commenter should receive **only** the “Thanks for commenting”
-   prompt with a **Click to get link** button — no link yet. Tap it: the app
-   checks the follow a second time and then sends the link. The dashboard
-   row moves **Thanks prompt sent → Link sent**.
+3. A **public reply** should appear under the triggering comment. If Meta
+   verified the follower at check #1, it says to check DM and tap the
+   button. If the fresh tester is still unverified at check #1 (the normal
+   no-prior-DM case), it also says to check DM and tap, but notes that the
+   follow will be verified before the link is sent. In DM, the commenter
+   receives **only** the “Thanks for commenting” prompt with a **Click to
+   get link** button — no link yet. Tap it: the app checks the follow a
+   second time and then sends the link. The dashboard row moves **Thanks
+   prompt sent → Link sent**, while the separate **Comment reply** column
+   shows the public reply outcome.
 4. To prove check #2 is independent, repeat with another comment, unfollow
    after the prompt arrives, then tap the button: you should get the
    follow-and-**Try again** prompt instead of the link. Follow again and
    tap **Try again** to receive the link.
 5. A positively identified non-follower at check #1 appears as **Not
-   following — no DM**. An unverified commenter appears as **Follow
-   unverified — no DM** only when `PROMPT_UNVERIFIED_COMMENTERS=false`;
+   following — no DM** and, when public replies are enabled, receives the
+   public follow-first reply instead of a “check DM/sent” claim. An
+   unverified commenter appears as **Follow unverified — no DM** only when
+   `PROMPT_UNVERIFIED_COMMENTERS=false`;
    with the default comment-first mode, they receive the prompt and strict
    check #2 decides the link.
 
@@ -336,13 +358,18 @@ Meta comments webhook ─► verify X-Hub-Signature-256 (raw body)
                            then env fallback)             ◄─ unmapped: no DM
                          FOLLOW CHECK #1
                            GET /<IGSID>?fields=is_user_follow_business
-                                                          ◄─ false: no DM
+                                                          ◄─ false: no DM +
+                                                             public follow-first
+                                                             comment reply
                                                           ◄─ unverified: prompt
                                                              by default, then
                                                              strict check #2
                          POST /<IG_ID>/messages
                            recipient.comment_id +
                            INTRO_DM_MESSAGE + [Click to get link]
+                         POST /<IG_COMMENT_ID>/replies
+                           public “check DM / tap” reply
+                           (separate status; failure ≠ DM failure)
         │ user taps the button
         ▼
 Meta messages webhook ─► CLAIM tap event id               ◄─ duplicate? stop
@@ -363,14 +390,14 @@ Files:
 | `lib/signature.ts` | HMAC-SHA256 verification (constant-time) |
 | `lib/parse.ts` | Webhook payload → comment events + messaging (tap) events |
 | `lib/keywords.ts` | Case-insensitive whole-word matching |
-| `lib/process.ts` | Comment stage (check #1 → prompt) and tap stage (check #2 → link/prompt) |
-| `lib/instagram.ts` | Follow-status, private-reply, and conversation-message API clients |
+| `lib/process.ts` | Comment stage (check #1 → DM prompt + separate public comment reply) and tap stage (check #2 → link/prompt) |
+| `lib/instagram.ts` | Follow-status, private-reply, public comment-reply, and conversation-message API clients |
 | `lib/store.ts` | Postgres or JSON-file store with atomic claim |
 | `lib/config.ts` | All env parsing (tokens never hardcoded) |
 | `scripts/simulate-webhook.mjs` | Signed fake webhook for local testing |
 | `scripts/subscribe-webhooks.mjs` | `POST /me/subscribed_apps` one-time setup |
 | `scripts/refresh-token.mjs` | Long-lived token refresh helper |
-| `test/` | 65 unit tests (signature, keyword/any matching, dashboard-managed per-Reel links, dedupe, both follow checks, comment-first unverified prompt flow, retry flow, API clients) |
+| `test/` | 76 unit tests (signature, keyword/any matching, dashboard-managed per-Reel links, dedupe, both follow checks, comment-first unverified prompt flow, public comment replies/loop prevention, retry flow, API clients) |
 
 ---
 
@@ -378,8 +405,9 @@ Files:
 
 - **One private reply per comment**, within **7 days** of the comment (for
   Live comments, only during the broadcast) — that one reply is the thanks
-  prompt. The button tap is a user message, which opens the standard
-  24-hour messaging window for the link/follow-prompt follow-ups.
+  prompt. The app separately posts at most **one public reply per claimed
+  triggering comment**. The button tap is a user message, which opens the
+  standard 24-hour messaging window for the link/follow-prompt follow-ups.
 - **Private-reply quick replies still need one controlled live check.**
   Meta documents quick replies and private replies on the same
   `/messages` endpoint, but the official pages fetched for this project do
@@ -394,7 +422,20 @@ Files:
 - Without `DATABASE_URL` on a serverless host, dedupe state lives in
   `/tmp` and can be lost between invocations; the dashboard warns about
   this. Meta's own one-reply-per-comment rule is the last line of defence.
-- The app sends no public comment replies. Both follow checks use the same
+- Public comment replies use Meta's documented
+  `POST /<IG_COMMENT_ID>/replies` endpoint with
+  `instagram_business_manage_comments`. Meta does not allow replies to
+  hidden comments or live-video comments; only top-level comments can be
+  replied to directly (a reply to a reply is attached to the top-level
+  comment). The public reply is attempted only for a matched,
+  resource-resolved comment—not for own comments, unmatched comments,
+  unmapped-media failures, duplicate-for-media comments, or a failed DM
+  prompt. The stored reply ID plus own-account/self-ID checks stop the
+  automation's own public reply webhook from starting a reply loop.
+  Official references:
+  [Comment Moderation](https://developers.facebook.com/documentation/instagram-platform/comment-moderation)
+  and [IG Comment Replies](https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-comment/replies).
+- Both follow checks use the same
   Meta field, but verification is limited by Meta: the User Profile API
   uses an Instagram-scoped ID and requires profile-access consent. Consent
   is granted when the user messages your professional account or uses an
@@ -409,9 +450,10 @@ Files:
   references: [User Profile API](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/messaging-api/user-profile),
   [Private Replies](https://developers.facebook.com/documentation/instagram-platform/private-replies),
   and [Quick Replies](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/messaging-api/quick-replies).
-- Comment text and usernames are stored (needed for the dashboard and
-  dedupe). Files: local mode caps at the newest 500 records; delete rows /
-  the data file whenever you want a clean slate.
+- Comment text, usernames, DM IDs, and public-reply IDs/status are stored
+  (needed for the dashboard, dedupe, and reply-loop prevention). Files:
+  local mode caps at the newest 500 records; delete rows / the data file
+  whenever you want a clean slate.
 
 ## Troubleshooting
 
@@ -424,7 +466,9 @@ Files:
 | `403 Invalid signature` in logs | `META_APP_SECRET` doesn't match the app that sends the webhooks. |
 | DM status `failed` + code 190 / 463 | Token expired/invalid — refresh or regenerate, update env, redeploy. |
 | DM status `failed` + permission error | Token lacks `instagram_business_manage_messages` — add the permission, regenerate the token. |
-| “Not following — no DM” at the comment stage | Working as intended: check #1 returned `is_user_follow_business=false`, so no prompt was sent. The person must follow and comment again. (After a prompt, a false check #2 instead sends the follow-and-Try-again message.) |
+| DM prompt/link works but **Comment reply = Public reply failed** | The public reply is a separate action. Read its sanitized error in the **Comment reply** column. A permission error usually means the token lacks `instagram_business_manage_comments`; add it and regenerate the token. Hidden/live-video comments and some reply shapes can also be rejected by Meta. The DM result remains valid. |
+| No public reply, but health looks live | Confirm `/api/health` reports `commentReplyEnabled:true` and `dryRun:false`, then use a brand-new matched comment on a mapped Reel. Unmatched, own, duplicate-for-media, and failed-resource comments intentionally get no public reply. |
+| “Not following — no DM” at the comment stage | Working as intended: check #1 returned `is_user_follow_business=false`, so no prompt was sent. With public replies enabled, the comment instead receives the public follow-first reply. The person must follow and comment again. (After a prompt, a false check #2 instead sends the follow-and-Try-again message.) |
 | “No link configured for media …” | In the dashboard's Reel resources section, paste that Reel's URL under its media id and save (dashboard credentials required), then comment again. `MEDIA_LINKS_JSON` / `DEFAULT_LINK_URL` remain optional env fallbacks. No prompt is sent for an unmapped Reel. |
 | Comments trigger nothing in any-comment mode | Confirm `COMMENT_MATCH_MODE=any` on the deployed build (`/api/health`), the comment is non-empty, and the same user does not already have a prompt/link flow for that Reel. |
 | “Follow unverified — no DM” at the comment stage | Check #1 could not obtain a boolean, commonly Meta error 230 because the commenter has not previously messaged your account to grant profile consent. Confirm `/api/health` reports `promptUnverifiedCommenters:true` (the default) and that the latest deployment is live; those commenters should then receive the button prompt and be verified strictly at check #2. If health reports `false`, remove that override or set it `true` and redeploy. |

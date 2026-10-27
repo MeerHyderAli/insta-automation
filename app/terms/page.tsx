@@ -11,8 +11,8 @@ export default function TermsPage() {
     <LegalPage title="Terms of Use">
       <p>
         Comment-to-DM helps the operator of one connected Instagram professional account respond
-        to comments with a private-reply prompt and, after the configured follow checks pass,
-        a resource link selected for the relevant Reel or post.
+        to comments with a private-reply prompt and related public comment reply and, after the
+        configured follow checks pass, a resource link selected for the relevant Reel or post.
       </p>
 
       <h2>Use of the service</h2>
@@ -27,7 +27,8 @@ export default function TermsPage() {
         <li>
           A link is sent only when the app is configured to do so and the required checks pass.
           Delivery can be affected by Instagram availability, messaging windows, permissions,
-          follow status, account settings, and Meta API limits.
+          follow status, account settings, and Meta API limits. Public comment replies are a
+          separate Meta API action and can succeed or fail independently of DM delivery.
         </li>
       </ul>
 

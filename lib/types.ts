@@ -20,6 +20,8 @@ export type DmStatus =
 
 export type FollowStatus = 'following' | 'not_following' | 'unverified' | 'not_checked';
 
+export type CommentReplyStatus = 'not_sent' | 'sent' | 'failed' | 'skipped' | 'dry_run';
+
 export interface CommentRecord {
   commentId: string;
   commenterId: string | null;
@@ -33,6 +35,10 @@ export interface CommentRecord {
   followStatus: FollowStatus;
   dmStatus: DmStatus;
   dmMessageId: string | null;
+  /** Public comment reply posted by this automation, tracked separately from the DM. */
+  commentReplyStatus: CommentReplyStatus;
+  commentReplyId: string | null;
+  commentReplyError: string | null;
   lastClickEventId: string | null;
   error: string | null;
   /** ISO-8601 */
@@ -48,6 +54,9 @@ export type CommentPatch = Partial<
     | 'resourceLink'
     | 'followStatus'
     | 'dmMessageId'
+    | 'commentReplyStatus'
+    | 'commentReplyId'
+    | 'commentReplyError'
     | 'lastClickEventId'
     | 'error'
   >
@@ -69,6 +78,10 @@ export interface ParsedComment {
   commenterId: string | null;
   username: string | null;
   text: string;
+  /** Parent comment ID for a reply, when Meta includes it. */
+  parentId: string | null;
+  /** Professional account's own IGSID, present on documented self-comment payloads. */
+  selfIgScopedId: string | null;
   /** Unix seconds from the webhook entry, when present. */
   timestamp: number | null;
 }
@@ -90,6 +103,8 @@ export interface ProcessSummary {
   received: number;
   matched: number;
   promptSent: number;
+  commentRepliesSent: number;
+  commentRepliesFailed: number;
   dryRun: number;
   notMatched: number;
   failed: number;

@@ -21,6 +21,8 @@ export interface CommentStore {
   list(limit: number): Promise<CommentRecord[]>;
   findLatestPendingByCommenterId(commenterId: string): Promise<CommentRecord | null>;
   findPendingByCommentId(commentId: string): Promise<CommentRecord | null>;
+  /** Finds the original record whose automation public reply has this comment ID. */
+  findRecordByCommentReplyId(commentReplyId: string): Promise<CommentRecord | null>;
   hasHandledCommentForUserMedia(
     commenterId: string,
     mediaId: string,
@@ -91,6 +93,9 @@ export class FileCommentStore implements CommentStore {
       commenterId: record.commenterId ?? null,
       resourceLink: record.resourceLink ?? null,
       followStatus: record.followStatus ?? 'not_checked',
+      commentReplyStatus: record.commentReplyStatus ?? 'not_sent',
+      commentReplyId: record.commentReplyId ?? null,
+      commentReplyError: record.commentReplyError ?? null,
       lastClickEventId: record.lastClickEventId ?? null,
     })) as CommentRecord[];
   }
@@ -244,6 +249,11 @@ export class FileCommentStore implements CommentStore {
     );
   }
 
+  async findRecordByCommentReplyId(commentReplyId: string): Promise<CommentRecord | null> {
+    const all = await this.readAll();
+    return all.find((record) => record.commentReplyId === commentReplyId) ?? null;
+  }
+
   async hasHandledCommentForUserMedia(
     commenterId: string,
     mediaId: string,
@@ -347,6 +357,9 @@ interface PgRow {
   follow_status: CommentRecord['followStatus'] | null;
   dm_status: CommentRecord['dmStatus'];
   dm_message_id: string | null;
+  comment_reply_status: CommentRecord['commentReplyStatus'] | null;
+  comment_reply_id: string | null;
+  comment_reply_error: string | null;
   last_click_event_id: string | null;
   error: string | null;
   received_at: Date | string;
@@ -354,6 +367,7 @@ interface PgRow {
 
 const PG_COLUMNS = `comment_id, commenter_id, ig_account_id, media_id, username, text,
               matched_keyword, resource_link, follow_status, dm_status, dm_message_id,
+              comment_reply_status, comment_reply_id, comment_reply_error,
               last_click_event_id, error, received_at`;
 
 function mapPgRow(row: PgRow): CommentRecord {
@@ -369,6 +383,9 @@ function mapPgRow(row: PgRow): CommentRecord {
     followStatus: row.follow_status ?? 'not_checked',
     dmStatus: row.dm_status,
     dmMessageId: row.dm_message_id,
+    commentReplyStatus: row.comment_reply_status ?? 'not_sent',
+    commentReplyId: row.comment_reply_id,
+    commentReplyError: row.comment_reply_error,
     lastClickEventId: row.last_click_event_id,
     error: row.error,
     receivedAt:
@@ -442,6 +459,9 @@ export class PostgresCommentStore implements CommentStore {
              follow_status   TEXT,
              dm_status       TEXT NOT NULL,
              dm_message_id   TEXT,
+             comment_reply_status TEXT,
+             comment_reply_id TEXT,
+             comment_reply_error TEXT,
              last_click_event_id TEXT,
              error           TEXT,
              received_at     TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -454,6 +474,14 @@ export class PostgresCommentStore implements CommentStore {
              ADD COLUMN IF NOT EXISTS last_click_event_id TEXT;
            ALTER TABLE processed_comments
              ADD COLUMN IF NOT EXISTS resource_link TEXT;
+           ALTER TABLE processed_comments
+             ADD COLUMN IF NOT EXISTS comment_reply_status TEXT;
+           ALTER TABLE processed_comments
+             ADD COLUMN IF NOT EXISTS comment_reply_id TEXT;
+           ALTER TABLE processed_comments
+             ADD COLUMN IF NOT EXISTS comment_reply_error TEXT;
+           CREATE INDEX IF NOT EXISTS processed_comments_comment_reply_idx
+             ON processed_comments (comment_reply_id);
            CREATE INDEX IF NOT EXISTS processed_comments_received_at_idx
              ON processed_comments (received_at DESC);
            CREATE INDEX IF NOT EXISTS processed_comments_commenter_idx
@@ -490,8 +518,8 @@ export class PostgresCommentStore implements CommentStore {
     await this.ensureSchema();
     const result = await this.pool.query(
       `INSERT INTO processed_comments
-         (comment_id, commenter_id, ig_account_id, media_id, username, text, matched_keyword, resource_link, follow_status, dm_status, dm_message_id, last_click_event_id, error, received_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         (comment_id, commenter_id, ig_account_id, media_id, username, text, matched_keyword, resource_link, follow_status, dm_status, dm_message_id, comment_reply_status, comment_reply_id, comment_reply_error, last_click_event_id, error, received_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        ON CONFLICT (comment_id) DO NOTHING
        RETURNING comment_id`,
       [
@@ -506,6 +534,9 @@ export class PostgresCommentStore implements CommentStore {
         record.followStatus,
         record.dmStatus,
         record.dmMessageId,
+        record.commentReplyStatus,
+        record.commentReplyId,
+        record.commentReplyError,
         record.lastClickEventId,
         record.error,
         record.receivedAt,
@@ -523,6 +554,9 @@ export class PostgresCommentStore implements CommentStore {
       resourceLink: 'resource_link',
       followStatus: 'follow_status',
       dmMessageId: 'dm_message_id',
+      commentReplyStatus: 'comment_reply_status',
+      commentReplyId: 'comment_reply_id',
+      commentReplyError: 'comment_reply_error',
       lastClickEventId: 'last_click_event_id',
       error: 'error',
     };
@@ -576,6 +610,18 @@ export class PostgresCommentStore implements CommentStore {
           AND dm_status IN ('prompt_sent', 'follow_prompt_sent')
         LIMIT 1`,
       [commentId],
+    );
+    return result.rows[0] ? mapPgRow(result.rows[0]) : null;
+  }
+
+  async findRecordByCommentReplyId(commentReplyId: string): Promise<CommentRecord | null> {
+    await this.ensureSchema();
+    const result = await this.pool.query<PgRow>(
+      `SELECT ${PG_COLUMNS}
+         FROM processed_comments
+        WHERE comment_reply_id = $1
+        LIMIT 1`,
+      [commentReplyId],
     );
     return result.rows[0] ? mapPgRow(result.rows[0]) : null;
   }

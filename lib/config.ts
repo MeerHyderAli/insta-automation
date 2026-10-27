@@ -15,6 +15,12 @@ export const DEFAULT_FOLLOW_UNVERIFIED_MESSAGE =
 export const DEFAULT_DM_MESSAGE = 'Here is your link: {link}';
 export const DEFAULT_GET_LINK_BUTTON_TEXT = 'Click to get link';
 export const DEFAULT_TRY_AGAIN_BUTTON_TEXT = 'Try again';
+export const DEFAULT_COMMENT_REPLY_FOLLOWING_MESSAGE =
+  '{username} check your DM 📩 Tap the button there to get your link.';
+export const DEFAULT_COMMENT_REPLY_NOT_FOLLOWING_MESSAGE =
+  '{username} please follow this account first, then comment again to get the link in your DM.';
+export const DEFAULT_COMMENT_REPLY_UNVERIFIED_MESSAGE =
+  '{username} check your DM 📩 Tap the button there and we’ll verify your follow before sending the link.';
 
 export type CommentMatchMode = 'keywords' | 'any';
 
@@ -37,6 +43,10 @@ export interface AppConfig {
   followUnverifiedMessage: string;
   getLinkButtonText: string;
   tryAgainButtonText: string;
+  commentReplyEnabled: boolean;
+  commentReplyFollowingMessage: string;
+  commentReplyNotFollowingMessage: string;
+  commentReplyUnverifiedMessage: string;
   requireFollowBeforePrompt: boolean;
   /** Send the prompt when check #1 is unverified (common before any DM). */
   promptUnverifiedCommenters: boolean;
@@ -183,6 +193,19 @@ export function getConfig(env: Env = process.env): AppConfig {
     ),
     getLinkButtonText: buttonText(env.GET_LINK_BUTTON_TEXT, DEFAULT_GET_LINK_BUTTON_TEXT),
     tryAgainButtonText: buttonText(env.TRY_AGAIN_BUTTON_TEXT, DEFAULT_TRY_AGAIN_BUTTON_TEXT),
+    commentReplyEnabled: parseBoolean(env.COMMENT_REPLY_ENABLED, true),
+    commentReplyFollowingMessage: cleanOrDefault(
+      env.COMMENT_REPLY_FOLLOWING_MESSAGE,
+      DEFAULT_COMMENT_REPLY_FOLLOWING_MESSAGE,
+    ),
+    commentReplyNotFollowingMessage: cleanOrDefault(
+      env.COMMENT_REPLY_NOT_FOLLOWING_MESSAGE,
+      DEFAULT_COMMENT_REPLY_NOT_FOLLOWING_MESSAGE,
+    ),
+    commentReplyUnverifiedMessage: cleanOrDefault(
+      env.COMMENT_REPLY_UNVERIFIED_MESSAGE,
+      DEFAULT_COMMENT_REPLY_UNVERIFIED_MESSAGE,
+    ),
     // The follow status is intentionally checked twice. The specific flags
     // win, while REQUIRE_FOLLOW_TO_SEND remains supported as the legacy
     // master switch for deployments created before the two-step flow.
@@ -225,6 +248,12 @@ export function getConfigStatus(config: AppConfig) {
     defaultLinkConfigured: Boolean(config.defaultLinkUrl),
     getLinkButtonText: config.getLinkButtonText,
     tryAgainButtonText: config.tryAgainButtonText,
+    commentReplyEnabled: config.commentReplyEnabled,
+    commentReplyMessagesConfigured: Boolean(
+      config.commentReplyFollowingMessage &&
+        config.commentReplyNotFollowingMessage &&
+        config.commentReplyUnverifiedMessage,
+    ),
     requireFollowBeforePrompt: config.requireFollowBeforePrompt,
     promptUnverifiedCommenters: config.promptUnverifiedCommenters,
     requireFollowForLink: config.requireFollowForLink,

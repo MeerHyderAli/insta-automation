@@ -3,6 +3,7 @@ import { listOwnMedia, type InstagramMediaSummary } from '../lib/instagram';
 import { getStore } from '../lib/store';
 import type {
   CommentRecord,
+  CommentReplyStatus,
   DmStatus,
   FollowStatus,
   MediaResource,
@@ -36,6 +37,18 @@ const FOLLOW_LABEL: Record<FollowStatus, string> = {
   unverified: 'Could not verify',
   not_checked: 'Not checked',
 };
+
+const COMMENT_REPLY_LABEL: Record<CommentReplyStatus, string> = {
+  not_sent: 'Not sent',
+  sent: 'Public reply sent',
+  failed: 'Public reply failed',
+  skipped: 'Public reply skipped',
+  dry_run: 'Dry run (not posted)',
+};
+
+function commentReplyPillClass(status: CommentReplyStatus): string {
+  return `comment-reply-${status}`;
+}
 
 const WEBHOOK_RECEIPT_LABEL: Record<WebhookReceiptStatus, string> = {
   processed: 'Processed',
@@ -240,6 +253,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
       ? 'ANY'
       : (record.matchedKeyword ?? '—');
   const failed = records.filter((record) => record.dmStatus === 'failed').length;
+  const commentRepliesSent = records.filter(
+    (record) => record.commentReplyStatus === 'sent',
+  ).length;
+  const commentRepliesFailed = records.filter(
+    (record) => record.commentReplyStatus === 'failed',
+  ).length;
 
   return (
     <main className="container">
@@ -250,8 +269,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             <div className="title">Comment-to-DM</div>
             <div className="subtitle">
               {status.commentMatchMode === 'any'
-                ? 'Any comment is follow-checked, receives a thanks prompt with a button, then is follow-checked again before that Reel’s link is sent.'
-                : 'Keyword comments are follow-checked, receive a thanks prompt with a button, then are follow-checked again before the link is sent.'}
+                ? 'Triggering comments are follow-checked, receive a DM prompt with a button, and get a matching public comment reply; the link is sent only after the second follow check passes.'
+                : 'Keyword comments are follow-checked, receive a DM prompt with a button, and get a matching public comment reply; the link is sent only after the second follow check passes.'}
             </div>
           </div>
         </div>
@@ -288,13 +307,23 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
               interaction used for check #2.
             </>
           ) : null}
+          {status.commentReplyEnabled ? (
+            <>
+              {' '}
+              Public replies mirror that result: confirmed followers are told to check DM,
+              confirmed non-followers are asked to follow first and comment again, and
+              unverified users who receive the prompt are not falsely told that a link was
+              sent.
+            </>
+          ) : null}
         </div>
       ) : null}
 
       {status.dryRun ? (
         <div className="banner banner-warn">
-          <strong>DRY_RUN is on.</strong> Matching comments are recorded but no DM is sent to
-          Instagram. Set <code>DRY_RUN=false</code> when you are ready to go live.
+          <strong>DRY_RUN is on.</strong> Matching comments are recorded but no DM or public
+          comment reply is sent to Instagram. Set <code>DRY_RUN=false</code> when you are
+          ready to go live.
         </div>
       ) : null}
 
@@ -326,6 +355,14 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
         <div className="stat">
           <div className="stat-value">{failed}</div>
           <div className="stat-label">DM failures</div>
+        </div>
+        <div className="stat">
+          <div className="stat-value">{commentRepliesSent}</div>
+          <div className="stat-label">Public replies sent</div>
+        </div>
+        <div className="stat">
+          <div className="stat-value">{commentRepliesFailed}</div>
+          <div className="stat-label">Public reply failures</div>
         </div>
       </section>
 
@@ -419,6 +456,26 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
               Follow check #2 (after button tap):{' '}
               {status.requireFollowForLink ? 'enabled' : 'disabled'}{' '}
               <span className="muted">(<code>REQUIRE_FOLLOW_FOR_LINK</code>)</span>
+            </span>
+          </li>
+          <li>
+            <StatusDot
+              state={
+                status.commentReplyEnabled && status.commentReplyMessagesConfigured
+                  ? 'ok'
+                  : 'warn'
+              }
+            />
+            <span>
+              Public comment replies:{' '}
+              {status.commentReplyEnabled ? 'enabled' : 'disabled'}
+              {status.commentReplyEnabled
+                ? ' — followers/prompted unverified users get “check DM”; confirmed non-followers get “follow first” and no DM'
+                : ''}{' '}
+              <span className="muted">
+                (<code>COMMENT_REPLY_ENABLED</code>; token needs{' '}
+                <code>instagram_business_manage_comments</code>)
+              </span>
             </span>
           </li>
           <li>
@@ -790,6 +847,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
                   <th>Trigger</th>
                   <th>Latest follow check</th>
                   <th>DM</th>
+                  <th>Comment reply</th>
                   <th>Detail</th>
                 </tr>
               </thead>
@@ -811,6 +869,18 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
                         {STATUS_LABEL[record.dmStatus]}
                       </span>
                     </td>
+                    <td>
+                      <span
+                        className={`pill ${commentReplyPillClass(record.commentReplyStatus ?? 'not_sent')}`}
+                      >
+                        {COMMENT_REPLY_LABEL[record.commentReplyStatus ?? 'not_sent']}
+                      </span>
+                      {record.commentReplyError ? (
+                        <div className="small muted">{record.commentReplyError}</div>
+                      ) : record.commentReplyId ? (
+                        <div className="small muted">Reply {record.commentReplyId}</div>
+                      ) : null}
+                    </td>
                     <td className="small muted">
                       {record.error
                         ? record.error
@@ -827,9 +897,11 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
       </section>
 
       <footer className="footer">
-        Each triggering comment can receive one private-reply prompt, tied to that comment’s
-        Reel/post. Follow status is checked before that prompt and again after the button tap;
-        “Link sent” is shown only when the second check passes and Instagram confirms the message.
+        Each triggering comment can receive one private-reply prompt and one separately tracked
+        public comment reply, tied to that comment’s Reel/post. Follow status is checked before
+        that prompt and again after the button tap; “Link sent” is shown only when the second
+        check passes and Instagram confirms the message. A public-reply failure does not undo a
+        successful DM prompt.
       </footer>
     </main>
   );

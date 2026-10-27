@@ -83,6 +83,10 @@ tbody tr:last-child td { border-bottom: none; }
 .pill-not_matched, .pill-skipped_own_comment, .pill-processing { background: rgba(151, 160, 181, 0.15); color: var(--muted); }
 .pill-dry_run, .pill-skipped_follow_unverified { background: rgba(245, 166, 35, 0.15); color: var(--warn); }
 .pill-skipped_not_following { background: rgba(245, 83, 77, 0.12); color: #ff8a85; }
+.comment-reply-sent { background: rgba(47, 191, 113, 0.15); color: var(--ok); }
+.comment-reply-failed { background: rgba(245, 83, 77, 0.15); color: var(--bad); }
+.comment-reply-not_sent, .comment-reply-skipped { background: rgba(151, 160, 181, 0.15); color: var(--muted); }
+.comment-reply-dry_run { background: rgba(245, 166, 35, 0.15); color: var(--warn); }
 .follow-following { background: rgba(47, 191, 113, 0.15); color: var(--ok); }
 .follow-not_following { background: rgba(245, 83, 77, 0.12); color: #ff8a85; }
 .follow-unverified { background: rgba(245, 166, 35, 0.15); color: var(--warn); }

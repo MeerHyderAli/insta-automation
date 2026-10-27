@@ -143,6 +143,85 @@ export async function sendMessageToUser(
   });
 }
 
+export interface ReplyToCommentInput {
+  commentId: string;
+  message: string;
+  accessToken: string;
+  graphVersion?: string;
+  fetchFn?: typeof fetch;
+  timeoutMs?: number;
+}
+
+export interface ReplyToCommentResult {
+  commentId: string | null;
+}
+
+/**
+ * Posts one public reply to an IG Comment using Meta's Comment Moderation
+ * endpoint (`POST /<IG_COMMENT_ID>/replies`). This is separate from the
+ * private reply/DM and requires instagram_business_manage_comments.
+ */
+export async function replyToComment(
+  input: ReplyToCommentInput,
+): Promise<ReplyToCommentResult> {
+  const version = normalizeGraphVersion(input.graphVersion);
+  const url = `https://graph.instagram.com/${version}/${encodeURIComponent(input.commentId)}/replies`;
+  const fetchFn = input.fetchFn ?? fetch;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? 10_000);
+
+  let response: Response;
+  try {
+    response = await fetchFn(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message: input.message }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const messageText =
+      error instanceof Error && error.name === 'AbortError'
+        ? 'Instagram comment reply request timed out'
+        : 'Could not reach the Instagram comment reply API';
+    throw new InstagramApiError(messageText, 0);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const rawText = await response.text();
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = JSON.parse(rawText) as Record<string, unknown>;
+  } catch {
+    // Non-JSON body handled below via status.
+  }
+
+  if (!response.ok) {
+    const errorObj =
+      typeof payload.error === 'object' && payload.error !== null
+        ? (payload.error as Record<string, unknown>)
+        : {};
+    const apiMessage =
+      typeof errorObj.message === 'string' ? errorObj.message : `HTTP ${response.status}`;
+    const code = typeof errorObj.code === 'number' ? errorObj.code : undefined;
+    throw new InstagramApiError(
+      redact(
+        `Instagram comment reply API error${code ? ` ${code}` : ''}: ${apiMessage}`,
+        input.accessToken,
+      ).slice(0, 300),
+      response.status,
+      code,
+    );
+  }
+
+  return {
+    commentId: typeof payload.id === 'string' ? payload.id : null,
+  };
+}
+
 export interface GetUserFollowStatusInput {
   /** Instagram-scoped ID (IGSID) for the commenter/message sender. */
   igsid: string;

@@ -9,6 +9,7 @@ import {
   processMessageEvents,
   renderDmMessage,
   type CheckFollowInput,
+  type ReplyToCommentInputForProcess,
   type SendDmInput,
   type SendUserDmInput,
 } from '../lib/process';
@@ -33,6 +34,11 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     followUnverifiedMessage: 'I could not verify your follow yet. Please tap Try again.',
     getLinkButtonText: 'Click to get link',
     tryAgainButtonText: 'Try again',
+    commentReplyEnabled: false,
+    commentReplyFollowingMessage: '{username} check your DM for the prompt.',
+    commentReplyNotFollowingMessage: '{username} please follow first, then comment again.',
+    commentReplyUnverifiedMessage:
+      '{username} check your DM; we will verify your follow there before sending the link.',
     requireFollowBeforePrompt: false,
     promptUnverifiedCommenters: false,
     requireFollowForLink: false,
@@ -51,6 +57,8 @@ function testComment(overrides: Partial<ParsedComment> = {}): ParsedComment {
     commenterId: 'user-9',
     username: 'alice',
     text: 'LINK please!',
+    parentId: null,
+    selfIgScopedId: null,
     timestamp: null,
     ...overrides,
   };
@@ -333,6 +341,244 @@ describe('processCommentEvents — first follow check + prompt', () => {
   });
 });
 
+
+describe('public comment replies', () => {
+  it('replies publicly to a verified follower after the DM prompt is sent', async () => {
+    const store = tempStore();
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({
+      messageId: 'prompt-public-reply',
+      recipientId: 'user-9',
+    }));
+    const checkFollow = vi.fn(async (_input: CheckFollowInput) => ({
+      status: 'following' as const,
+    }));
+    const replyToComment = vi.fn(
+      async (_input: ReplyToCommentInputForProcess) => ({ commentId: 'public-reply-1' }),
+    );
+
+    const summary = await processCommentEvents(
+      [testComment({ commentId: 'comment-public-follower' })],
+      {
+        store,
+        config: testConfig({
+          commentReplyEnabled: true,
+          requireFollowBeforePrompt: true,
+          requireFollowForLink: true,
+        }),
+        sendDm,
+        checkFollow,
+        replyToComment,
+      },
+    );
+
+    expect(summary).toMatchObject({ promptSent: 1, commentRepliesSent: 1, commentRepliesFailed: 0 });
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+    expect(replyToComment.mock.calls[0][0]).toMatchObject({
+      commentId: 'comment-public-follower',
+      message: '@alice check your DM for the prompt.',
+      accessToken: 'test-token',
+      graphVersion: 'v25.0',
+    });
+    expect((await store.list(50))[0]).toMatchObject({
+      dmStatus: 'prompt_sent',
+      commentReplyStatus: 'sent',
+      commentReplyId: 'public-reply-1',
+      commentReplyError: null,
+    });
+    expect((await store.findRecordByCommentReplyId('public-reply-1'))?.commentId).toBe(
+      'comment-public-follower',
+    );
+  });
+
+  it('asks a confirmed non-follower to follow first and sends no DM prompt', async () => {
+    const store = tempStore();
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({ messageId: 'must-not-send' }));
+    const checkFollow = vi.fn(async (_input: CheckFollowInput) => ({
+      status: 'not_following' as const,
+    }));
+    const replyToComment = vi.fn(
+      async (_input: ReplyToCommentInputForProcess) => ({ commentId: 'public-reply-2' }),
+    );
+
+    const summary = await processCommentEvents(
+      [testComment({ commentId: 'comment-public-nonfollower' })],
+      {
+        store,
+        config: testConfig({
+          commentReplyEnabled: true,
+          requireFollowBeforePrompt: true,
+          requireFollowForLink: true,
+        }),
+        sendDm,
+        checkFollow,
+        replyToComment,
+      },
+    );
+
+    expect(summary).toMatchObject({
+      promptSent: 0,
+      skippedNotFollowing: 1,
+      commentRepliesSent: 1,
+    });
+    expect(sendDm).not.toHaveBeenCalled();
+    expect(replyToComment.mock.calls[0][0].message).toBe(
+      '@alice please follow first, then comment again.',
+    );
+    expect((await store.list(50))[0]).toMatchObject({
+      dmStatus: 'skipped_not_following',
+      commentReplyStatus: 'sent',
+      commentReplyId: 'public-reply-2',
+    });
+  });
+
+  it('uses neutral public wording when follow status is unverified at comment time', async () => {
+    const store = tempStore();
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({
+      messageId: 'prompt-public-unverified',
+      recipientId: 'user-9',
+    }));
+    const checkFollow = vi.fn(async (_input: CheckFollowInput) => ({
+      status: 'unverified' as const,
+      error: 'User consent is required to access user profile',
+    }));
+    const replyToComment = vi.fn(
+      async (_input: ReplyToCommentInputForProcess) => ({ commentId: 'public-reply-3' }),
+    );
+
+    const summary = await processCommentEvents(
+      [testComment({ commentId: 'comment-public-unverified' })],
+      {
+        store,
+        config: testConfig({
+          commentReplyEnabled: true,
+          requireFollowBeforePrompt: true,
+          promptUnverifiedCommenters: true,
+          requireFollowForLink: true,
+        }),
+        sendDm,
+        checkFollow,
+        replyToComment,
+      },
+    );
+
+    expect(summary).toMatchObject({ promptSent: 1, commentRepliesSent: 1 });
+    expect(replyToComment.mock.calls[0][0].message).toBe(
+      '@alice check your DM; we will verify your follow there before sending the link.',
+    );
+    expect((await store.list(50))[0]).toMatchObject({
+      followStatus: 'unverified',
+      commentReplyStatus: 'sent',
+    });
+  });
+
+  it('keeps a sent DM prompt successful when the public reply API fails', async () => {
+    const store = tempStore();
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({
+      messageId: 'prompt-despite-public-failure',
+      recipientId: 'user-9',
+    }));
+    const replyToComment = vi.fn(async (_input: ReplyToCommentInputForProcess) => {
+      throw new Error('Instagram comment reply API error 10: permission denied');
+    });
+
+    const summary = await processCommentEvents(
+      [testComment({ commentId: 'comment-public-failure' })],
+      {
+        store,
+        config: testConfig({ commentReplyEnabled: true }),
+        sendDm,
+        replyToComment,
+      },
+    );
+
+    expect(summary).toMatchObject({
+      promptSent: 1,
+      failed: 0,
+      commentRepliesSent: 0,
+      commentRepliesFailed: 1,
+    });
+    expect((await store.list(50))[0]).toMatchObject({
+      dmStatus: 'prompt_sent',
+      dmMessageId: 'prompt-despite-public-failure',
+      commentReplyStatus: 'failed',
+      commentReplyError: 'Instagram comment reply API error 10: permission denied',
+    });
+  });
+
+  it('does not call the public reply API when disabled or in dry run', async () => {
+    const disabledStore = tempStore();
+    const dryRunStore = tempStore();
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({
+      messageId: 'prompt-disabled-public-reply',
+      recipientId: 'user-9',
+    }));
+    const replyToComment = vi.fn(
+      async (_input: ReplyToCommentInputForProcess) => ({ commentId: 'must-not-post' }),
+    );
+    const checkFollow = vi.fn(async (_input: CheckFollowInput) => ({
+      status: 'not_following' as const,
+    }));
+
+    await processCommentEvents([testComment({ commentId: 'comment-public-disabled' })], {
+      store: disabledStore,
+      config: testConfig({ commentReplyEnabled: false }),
+      sendDm,
+      replyToComment,
+    });
+    await processCommentEvents([testComment({ commentId: 'comment-public-dry-run' })], {
+      store: dryRunStore,
+      config: testConfig({
+        commentReplyEnabled: true,
+        requireFollowBeforePrompt: true,
+        dryRun: true,
+      }),
+      sendDm,
+      checkFollow,
+      replyToComment,
+    });
+
+    expect(replyToComment).not.toHaveBeenCalled();
+    expect((await disabledStore.list(50))[0].commentReplyStatus).toBe('skipped');
+    expect((await dryRunStore.list(50))[0]).toMatchObject({
+      dmStatus: 'skipped_not_following',
+      commentReplyStatus: 'dry_run',
+    });
+  });
+
+  it('ignores a webhook for the automation public reply itself', async () => {
+    const store = tempStore();
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({
+      messageId: 'prompt-loop-guard',
+      recipientId: 'user-9',
+    }));
+    const replyToComment = vi.fn(
+      async (_input: ReplyToCommentInputForProcess) => ({ commentId: 'public-reply-loop' }),
+    );
+    const deps = {
+      store,
+      config: testConfig({ commentReplyEnabled: true }),
+      sendDm,
+      replyToComment,
+    };
+
+    await processCommentEvents([testComment({ commentId: 'comment-loop-source' })], deps);
+    const loopSummary = await processCommentEvents(
+      [
+        testComment({
+          commentId: 'public-reply-loop',
+          commenterId: 'unexpected-sender-id',
+          parentId: 'comment-loop-source',
+          text: '@alice check your DM LINK',
+        }),
+      ],
+      deps,
+    );
+
+    expect(loopSummary).toMatchObject({ promptSent: 0, skippedOwn: 1 });
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(replyToComment).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('comment match modes and per-Reel links', () => {
   it('any non-empty comment triggers, but only one flow per user per Reel', async () => {

@@ -1,6 +1,7 @@
 import { resolveResourceLink, type AppConfig } from './config';
 import {
   getUserFollowStatus,
+  replyToComment,
   sendMessageToUser,
   sendPrivateReply,
   type FollowCheckResult,
@@ -44,6 +45,17 @@ export interface CheckFollowInput {
   graphVersion: string;
 }
 
+export interface ReplyToCommentInputForProcess {
+  commentId: string;
+  message: string;
+  accessToken: string;
+  graphVersion: string;
+}
+
+interface CommentReplyResultForProcess {
+  commentId: string | null;
+}
+
 interface SendResult {
   messageId: string | null;
   recipientId?: string | null;
@@ -58,6 +70,10 @@ export interface ProcessDeps {
   sendUserDm?: (input: SendUserDmInput) => Promise<SendResult>;
   /** Injectable for tests. Defaults to Meta's User Profile API. */
   checkFollow?: (input: CheckFollowInput) => Promise<FollowCheckResult>;
+  /** Injectable for tests. Defaults to Meta's public comment-reply API. */
+  replyToComment?: (
+    input: ReplyToCommentInputForProcess,
+  ) => Promise<CommentReplyResultForProcess>;
   now?: () => Date;
 }
 
@@ -130,6 +146,9 @@ function toRecord(comment: ParsedComment, now: Date): CommentRecord {
     followStatus: 'not_checked',
     dmStatus: 'processing',
     dmMessageId: null,
+    commentReplyStatus: 'not_sent',
+    commentReplyId: null,
+    commentReplyError: null,
     lastClickEventId: null,
     error: null,
     receivedAt: now.toISOString(),
@@ -153,6 +172,94 @@ async function runFollowCheck(
       status: 'unverified',
       error: safeErrorMessage(error, input.accessToken),
     };
+  }
+}
+
+type PublicCommentReplyOutcome = 'following' | 'not_following' | 'unverified';
+
+function publicCommentReplyTemplate(
+  config: AppConfig,
+  outcome: PublicCommentReplyOutcome,
+): string {
+  if (outcome === 'following') return config.commentReplyFollowingMessage;
+  if (outcome === 'not_following') return config.commentReplyNotFollowingMessage;
+  return config.commentReplyUnverifiedMessage;
+}
+
+/**
+ * Sends and records the optional public reply as a separate action. It must
+ * never throw into the DM flow: a failed public reply does not undo a prompt
+ * or change the strict second follow check.
+ */
+async function sendPublicCommentReply(input: {
+  comment: ParsedComment;
+  matchedKeyword: string;
+  outcome: PublicCommentReplyOutcome;
+  config: AppConfig;
+  store: CommentStore;
+  summary: ProcessSummary;
+  reply: (
+    replyInput: ReplyToCommentInputForProcess,
+  ) => Promise<CommentReplyResultForProcess>;
+}): Promise<void> {
+  const { comment, config, store, summary } = input;
+
+  try {
+    if (!config.commentReplyEnabled) {
+      await store.update(comment.commentId, {
+        commentReplyStatus: 'skipped',
+        commentReplyError: null,
+      });
+      return;
+    }
+
+    if (config.dryRun) {
+      await store.update(comment.commentId, {
+        commentReplyStatus: 'dry_run',
+        commentReplyError: null,
+      });
+      return;
+    }
+
+    if (!config.accessToken) {
+      await store.update(comment.commentId, {
+        commentReplyStatus: 'failed',
+        commentReplyError: 'IG_ACCESS_TOKEN is not configured',
+      });
+      summary.commentRepliesFailed += 1;
+      return;
+    }
+
+    const result = await input.reply({
+      commentId: comment.commentId,
+      message: renderDmMessage(
+        publicCommentReplyTemplate(config, input.outcome),
+        {
+          username: comment.username,
+          keyword: keywordForMessage(input.matchedKeyword),
+        },
+      ),
+      accessToken: config.accessToken,
+      graphVersion: config.graphVersion,
+    });
+
+    await store.update(comment.commentId, {
+      commentReplyStatus: 'sent',
+      commentReplyId: result.commentId,
+      commentReplyError: null,
+    });
+    summary.commentRepliesSent += 1;
+  } catch (error) {
+    summary.commentRepliesFailed += 1;
+    try {
+      await store.update(comment.commentId, {
+        commentReplyStatus: 'failed',
+        commentReplyError: safeErrorMessage(error, config.accessToken),
+      });
+    } catch {
+      // The public reply is an auxiliary action; storage failure here must
+      // not turn an already-sent DM prompt into a failed DM.
+    }
   }
 }
 
@@ -186,12 +293,17 @@ export async function processCommentEvents(
   const hasInjectedFollowChecker = Boolean(deps.checkFollow);
   const checkFollow =
     deps.checkFollow ?? ((input: CheckFollowInput) => getUserFollowStatus(input));
+  const replyToPublicComment =
+    deps.replyToComment ??
+    ((input: ReplyToCommentInputForProcess) => replyToComment(input));
   const now = deps.now ?? (() => new Date());
 
   const summary: ProcessSummary = {
     received: 0,
     matched: 0,
     promptSent: 0,
+    commentRepliesSent: 0,
+    commentRepliesFailed: 0,
     dryRun: 0,
     notMatched: 0,
     failed: 0,
@@ -217,12 +329,20 @@ export async function processCommentEvents(
     }
 
     try {
-      if (
+      const isOwnComment = Boolean(
         comment.commenterId &&
-        comment.igAccountId &&
-        comment.commenterId === comment.igAccountId
-      ) {
-        await store.update(comment.commentId, { dmStatus: 'skipped_own_comment' });
+          ((comment.igAccountId && comment.commenterId === comment.igAccountId) ||
+            (config.igAccountId && comment.commenterId === config.igAccountId) ||
+            (comment.selfIgScopedId && comment.commenterId === comment.selfIgScopedId)),
+      );
+      const isAutomationReply = Boolean(
+        await store.findRecordByCommentReplyId(comment.commentId),
+      );
+      if (isOwnComment || isAutomationReply) {
+        await store.update(comment.commentId, {
+          dmStatus: 'skipped_own_comment',
+          commentReplyStatus: 'skipped',
+        });
         summary.skippedOwn += 1;
         continue;
       }
@@ -341,6 +461,15 @@ export async function processCommentEvents(
               error: 'First follow check: Meta reported that this user does not follow the account',
             });
             summary.skippedNotFollowing += 1;
+            await sendPublicCommentReply({
+              comment,
+              matchedKeyword,
+              outcome: 'not_following',
+              config,
+              store,
+              summary,
+              reply: replyToPublicComment,
+            });
             continue;
           }
 
@@ -367,6 +496,7 @@ export async function processCommentEvents(
           dmStatus: 'dry_run',
           matchedKeyword,
           followStatus,
+          commentReplyStatus: config.commentReplyEnabled ? 'dry_run' : 'skipped',
         });
         summary.dryRun += 1;
         continue;
@@ -405,6 +535,15 @@ export async function processCommentEvents(
         error: null,
       });
       summary.promptSent += 1;
+      await sendPublicCommentReply({
+        comment,
+        matchedKeyword,
+        outcome: followStatus === 'following' ? 'following' : 'unverified',
+        config,
+        store,
+        summary,
+        reply: replyToPublicComment,
+      });
     } catch (error) {
       await store.update(comment.commentId, {
         dmStatus: 'failed',

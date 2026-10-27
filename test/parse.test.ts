@@ -38,6 +38,8 @@ describe('parseCommentEvents', () => {
         commenterId: 'user-9',
         username: 'alice',
         text: 'LINK please',
+        parentId: null,
+        selfIgScopedId: null,
         timestamp: 1_700_000_000,
       },
     ]);
@@ -69,9 +71,41 @@ describe('parseCommentEvents', () => {
         commenterId: 'user-10',
         username: 'bob',
         text: 'resource please',
+        parentId: null,
+        selfIgScopedId: null,
         timestamp: 1_700_000_000,
       },
     ]);
+  });
+
+  it('extracts parent and self-comment identifiers used for reply-loop prevention', () => {
+    const payload = {
+      object: 'instagram',
+      entry: [
+        {
+          id: 'ig-1',
+          time: 1_700_000_000,
+          field: 'comments',
+          value: {
+            id: 'reply-1',
+            parent_id: 'comment-1',
+            text: 'check your DM',
+            from: {
+              id: 'ig-1',
+              username: 'account-owner',
+              self_ig_scoped_id: 'ig-1',
+            },
+            media: { id: 'media-1', media_product_type: 'REELS' },
+          },
+        },
+      ],
+    };
+
+    expect(parseCommentEvents(payload)[0]).toMatchObject({
+      commentId: 'reply-1',
+      parentId: 'comment-1',
+      selfIgScopedId: 'ig-1',
+    });
   });
 
   it('skips malformed entries without throwing', () => {

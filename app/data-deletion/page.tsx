@@ -35,7 +35,8 @@ export default function DataDeletionPage() {
       <p>
         After verification, the operator will delete stored automation records associated with
         that account/commenter ID where they can be identified, including stored comment text,
-        username, follow-check result, delivery status, and related interaction metadata.
+        username, follow-check result, delivery status, public comment-reply status/IDs, and
+        related interaction metadata.
         Resource mappings created by the account operator do not identify individual commenters
         and are not part of a commenter deletion request.
       </p>
@@ -43,7 +44,8 @@ export default function DataDeletionPage() {
       <h2>What this does not delete</h2>
       <p>
         This request deletes records in this app’s storage only. It does not remove your public
-        comment, Instagram direct messages, or other content from Instagram. To delete content on
+        comment, public replies posted under it, Instagram direct messages, or other content from
+        Instagram. To delete content on
         Instagram, use the controls available in Instagram.
       </p>
 

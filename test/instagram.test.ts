@@ -3,6 +3,7 @@ import {
   getUserFollowStatus,
   InstagramApiError,
   listOwnMedia,
+  replyToComment,
   sendMessageToUser,
   sendPrivateReply,
   subscribeInstagramWebhooks,
@@ -69,6 +70,63 @@ describe('sendPrivateReply', () => {
   });
 });
 
+
+describe('replyToComment', () => {
+  it('posts a public reply to the IG Comment replies edge and returns its id', async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ id: 'public-reply-1' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const result = await replyToComment({
+      commentId: 'comment-1',
+      message: '@alice check your DM',
+      accessToken: 'secret-token',
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(result).toEqual({ commentId: 'public-reply-1' });
+    const [url, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://graph.instagram.com/v25.0/comment-1/replies');
+    expect(url).not.toContain('secret-token');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      'Bearer secret-token',
+    );
+    expect(JSON.parse(String(init.body))).toEqual({ message: '@alice check your DM' });
+  });
+
+  it('throws a sanitized public-reply error on API failure', async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          error: { message: 'Permission denied for secret-token', code: 10 },
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    await expect(
+      replyToComment({
+        commentId: 'comment-1',
+        message: 'check your DM',
+        accessToken: 'secret-token',
+        fetchFn: fetchFn as unknown as typeof fetch,
+      }),
+    ).rejects.toMatchObject({ name: 'InstagramApiError', code: 10 });
+
+    await expect(
+      replyToComment({
+        commentId: 'comment-1',
+        message: 'check your DM',
+        accessToken: 'secret-token',
+        fetchFn: fetchFn as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow('Permission denied for [REDACTED]');
+  });
+});
 
 describe('getUserFollowStatus', () => {
   it('reads is_user_follow_business=true without putting the token in the URL', async () => {

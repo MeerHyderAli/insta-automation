@@ -50,6 +50,8 @@ function resultSummary(comments: ProcessSummary, messages: MessageProcessSummary
     `comments received=${comments.received}`,
     `matched=${comments.matched}`,
     `promptSent=${comments.promptSent}`,
+    `commentRepliesSent=${comments.commentRepliesSent}`,
+    `commentRepliesFailed=${comments.commentRepliesFailed}`,
     `failed=${comments.failed}`,
     `duplicates=${comments.duplicates}`,
     `skippedNotFollowing=${comments.skippedNotFollowing}`,
