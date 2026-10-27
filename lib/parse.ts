@@ -14,59 +14,94 @@ function asString(value: unknown): string | null {
       : null;
 }
 
+function asTimestamp(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function rootRecords(payload: unknown): UnknownRecord[] {
+  if (Array.isArray(payload)) {
+    return payload.flatMap((item) => {
+      const record = asRecord(item);
+      return record ? [record] : [];
+    });
+  }
+  const record = asRecord(payload);
+  return record ? [record] : [];
+}
+
 export function isInstagramWebhook(payload: unknown): boolean {
-  return asRecord(payload)?.object === 'instagram';
+  return rootRecords(payload).some((root) => root.object === 'instagram');
 }
 
 /**
  * Extracts comment events from a webhook payload.
  *
- * Documented shape for the `comments` field (Instagram Login):
- * {
- *   object: "instagram",
- *   entry: [{
- *     id: "<IG professional account id>", time: 1234567890,
- *     changes: [{
- *       field: "comments",
- *       value: {
- *         id: "<comment id>", text: "LINK please",
- *         from: { id: "<commenter IGSID>", username: "alice" },
- *         media: { id: "<media id>", media_product_type: "FEED" }
- *       }
- *     }]
- *   }]
- * }
+ * Meta documents two wrappers for the same comment value:
+ *
+ * - Business Login for Instagram (the setup used by this app) puts
+ *   `field: "comments"` and `value: { ... }` directly on each `entry`.
+ * - Facebook Login payloads put the same objects in `entry.changes[]`.
+ *
+ * Support both so a valid Instagram Login notification is never silently
+ * ignored just because it does not use the Facebook Login wrapper.
  */
 export function parseCommentEvents(payload: unknown): ParsedComment[] {
-  const root = asRecord(payload);
-  const entries = Array.isArray(root?.entry) ? root.entry : [];
   const comments: ParsedComment[] = [];
+  const seenCommentIds = new Set<string>();
 
-  for (const rawEntry of entries) {
-    const entry = asRecord(rawEntry);
-    if (!entry) continue;
-    const igAccountId = asString(entry.id);
-    const timestamp = typeof entry.time === 'number' ? entry.time : null;
-    const changes = Array.isArray(entry.changes) ? entry.changes : [];
-
-    for (const rawChange of changes) {
-      const change = asRecord(rawChange);
-      if (!change || change.field !== 'comments') continue;
-      const value = asRecord(change.value);
+  const addCommentValue = (
+    rawValue: unknown,
+    igAccountId: string | null,
+    timestamp: number | null,
+  ) => {
+    const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+    for (const rawItem of values) {
+      const value = asRecord(rawItem);
       const commentId = asString(value?.id) ?? asString(value?.comment_id);
-      if (!value || !commentId) continue;
+      if (!value || !commentId || seenCommentIds.has(commentId)) continue;
+      seenCommentIds.add(commentId);
 
       const from = asRecord(value.from);
       const media = asRecord(value.media);
       comments.push({
         commentId,
         igAccountId,
-        mediaId: asString(media?.id),
-        commenterId: asString(from?.id),
-        username: asString(from?.username),
+        mediaId: asString(media?.id) ?? asString(value.media_id),
+        commenterId:
+          asString(from?.id) ?? asString(value.sender_id) ?? asString(value.from),
+        username: asString(from?.username) ?? asString(value.username),
         text: typeof value.text === 'string' ? value.text : '',
         timestamp,
       });
+    }
+  };
+
+  for (const root of rootRecords(payload)) {
+    const entries = Array.isArray(root.entry) ? root.entry : [];
+
+    for (const rawEntry of entries) {
+      const entry = asRecord(rawEntry);
+      if (!entry) continue;
+      const igAccountId = asString(entry.id);
+      const timestamp = asTimestamp(entry.time);
+
+      // Instagram Login shape: entry.field + entry.value.
+      if (entry.field === 'comments') {
+        addCommentValue(entry.value, igAccountId, timestamp);
+      }
+
+      // Facebook Login / generic Webhooks shape: entry.changes[].
+      const changes = Array.isArray(entry.changes) ? entry.changes : [];
+      for (const rawChange of changes) {
+        const change = asRecord(rawChange);
+        if (!change || change.field !== 'comments') continue;
+        addCommentValue(change.value, igAccountId, timestamp);
+      }
     }
   }
 
@@ -79,8 +114,9 @@ export function parseCommentEvents(payload: unknown): ParsedComment[] {
  * professional account are ignored.
  */
 export function parseMessageEvents(payload: unknown): ParsedMessageEvent[] {
-  const root = asRecord(payload);
-  const entries = Array.isArray(root?.entry) ? root.entry : [];
+  const entries = rootRecords(payload).flatMap((root) =>
+    Array.isArray(root.entry) ? root.entry : [],
+  );
   const events: ParsedMessageEvent[] = [];
 
   for (const rawEntry of entries) {
@@ -109,7 +145,7 @@ export function parseMessageEvents(payload: unknown): ParsedMessageEvent[] {
           : typeof postback?.title === 'string'
             ? postback.title
             : '';
-      const timestamp = typeof event.timestamp === 'number' ? event.timestamp : null;
+      const timestamp = asTimestamp(event.timestamp);
       const eventId =
         asString(message?.mid) ??
         asString(postback?.mid) ??

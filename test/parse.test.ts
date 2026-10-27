@@ -38,6 +38,37 @@ describe('parseCommentEvents', () => {
     ]);
   });
 
+  it('extracts the Business Login for Instagram entry.field/value shape', () => {
+    const payload = {
+      object: 'instagram',
+      entry: [
+        {
+          id: 'ig-1',
+          time: 1_700_000_000,
+          field: 'comments',
+          value: {
+            id: 'comment-2',
+            text: 'resource please',
+            from: { id: 'user-10', username: 'bob' },
+            media: { id: 'media-2', media_product_type: 'REELS' },
+          },
+        },
+      ],
+    };
+
+    expect(parseCommentEvents(payload)).toEqual([
+      {
+        commentId: 'comment-2',
+        igAccountId: 'ig-1',
+        mediaId: 'media-2',
+        commenterId: 'user-10',
+        username: 'bob',
+        text: 'resource please',
+        timestamp: 1_700_000_000,
+      },
+    ]);
+  });
+
   it('skips malformed entries without throwing', () => {
     expect(parseCommentEvents(null)).toEqual([]);
     expect(parseCommentEvents({ entry: 'nope' })).toEqual([]);
