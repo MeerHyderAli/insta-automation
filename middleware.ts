@@ -41,5 +41,7 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!api/webhook|api/health|_next/static|_next/image|favicon.ico|icon.svg).*)'],
+  matcher: [
+    '/((?!api/webhook|api/health|privacy|terms|data-deletion|app-icon\\.png|_next/static|_next/image|favicon.ico|icon.svg).*)',
+  ],
 };

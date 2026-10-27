@@ -177,16 +177,36 @@ Under **Instagram → API setup with Instagram login**:
    `REQUIRE_FOLLOW_FOR_LINK=true`, then redeploy. This dashboard-generated
    token is long-lived (~60 days). Treat it like a password.
 
-> **Development mode is enough for your own account:** while the app is in
-> Development mode, the API works for accounts that have a role in the app
-> (you, as admin) and approved Instagram testers. Commenters do **not** need
-> a role — they are just commenting on your media. If you later want this to
-> work for *other people's* accounts, each permission needs **Advanced
-> Access via App Review** (with screencasts) plus Business Verification, and
-> the app must be switched Live. That is out of scope for this single-account
-> app.
+> **Publishing still matters for your own account:** Meta's current Instagram
+> webhook UI says “To receive webhooks, your app must be in published state,”
+> and its webhook setup guide says the app must be Live before it receives
+> app-user notifications. Do not assume an unpublished/Development app will
+> deliver real `comments` events just because the connected account is yours.
+> Meta's App Review scenario table separately says an app that only serves a
+> business you own/manage with Standard Access may not need App Review; use
+> your app's own **Publish** checklist as the source of truth and submit App
+> Review only if that checklist requires Advanced Access for this use case.
 
-### Step 6 — Subscribe your account to the app's webhooks (easy to miss!)
+### Step 6 — Publish the Meta app (required before real webhooks)
+
+1. In **App settings → Basic**, complete every missing field Meta lists. The
+   deployed app provides these ready-to-paste URLs on your production domain:
+   - Privacy Policy URL: `https://YOUR-DOMAIN/privacy`
+   - Terms of Service URL (if shown): `https://YOUR-DOMAIN/terms`
+   - User Data Deletion instructions URL: `https://YOUR-DOMAIN/data-deletion`
+   - App icon: download `https://YOUR-DOMAIN/app-icon.png` (1024×1024 PNG)
+     and upload it; Meta's icon field is an upload, not a URL.
+2. Also complete the app category, business/contact email, app purpose, and
+   business connection if **Publish** lists them as missing. Instagram app
+   setup/Business Verification requirements are account-specific; do not skip
+   a checklist item just because API calls work in testing.
+3. Open **Publish** in the left App Dashboard menu, resolve every listed
+   requirement, then click **Publish**. Confirm the app shows a
+   Published/Live state before testing real comments. If Publish blocks on
+   Advanced Access/App Review for `comments`, complete App Review for only
+   the three permissions above before continuing.
+
+### Step 7 — Subscribe your account to the app's webhooks (easy to miss!)
 
 Creating the webhook in the Meta dashboard is not enough: your Instagram
 account must be subscribed to the app. Easiest: open this app's dashboard
