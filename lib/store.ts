@@ -20,10 +20,24 @@ export interface CommentStore {
   update(commentId: string, patch: CommentPatch): Promise<void>;
   list(limit: number): Promise<CommentRecord[]>;
   findLatestPendingByCommenterId(commenterId: string): Promise<CommentRecord | null>;
+  findPendingByCommentId(commentId: string): Promise<CommentRecord | null>;
+  hasHandledCommentForUserMedia(
+    commenterId: string,
+    mediaId: string,
+    excludeCommentId: string,
+  ): Promise<boolean>;
   tryClaimClick(commentId: string, eventId: string): Promise<CommentRecord | null>;
 }
 
 const PENDING_DM_STATUSES = new Set(['prompt_sent', 'follow_prompt_sent']);
+const HANDLED_USER_MEDIA_STATUSES = new Set([
+  'processing',
+  'checking_follow',
+  'prompt_sent',
+  'follow_prompt_sent',
+  'link_sent',
+  'sent',
+]);
 
 /* ------------------------------------------------------------------ */
 /* Local JSON file store (local dev / single small server)             */
@@ -65,6 +79,7 @@ export class FileCommentStore implements CommentStore {
     return (parsed as Array<Partial<CommentRecord>>).map((record) => ({
       ...record,
       commenterId: record.commenterId ?? null,
+      resourceLink: record.resourceLink ?? null,
       followStatus: record.followStatus ?? 'not_checked',
       lastClickEventId: record.lastClickEventId ?? null,
     })) as CommentRecord[];
@@ -117,6 +132,30 @@ export class FileCommentStore implements CommentStore {
     );
   }
 
+  async findPendingByCommentId(commentId: string): Promise<CommentRecord | null> {
+    const all = await this.readAll();
+    return (
+      all.find(
+        (record) => record.commentId === commentId && PENDING_DM_STATUSES.has(record.dmStatus),
+      ) ?? null
+    );
+  }
+
+  async hasHandledCommentForUserMedia(
+    commenterId: string,
+    mediaId: string,
+    excludeCommentId: string,
+  ): Promise<boolean> {
+    const all = await this.readAll();
+    return all.some(
+      (record) =>
+        record.commentId !== excludeCommentId &&
+        record.commenterId === commenterId &&
+        record.mediaId === mediaId &&
+        HANDLED_USER_MEDIA_STATUSES.has(record.dmStatus),
+    );
+  }
+
   tryClaimClick(commentId: string, eventId: string): Promise<CommentRecord | null> {
     return this.run(async () => {
       const all = await this.readAll();
@@ -150,6 +189,7 @@ interface PgRow {
   username: string | null;
   text: string;
   matched_keyword: string | null;
+  resource_link: string | null;
   follow_status: CommentRecord['followStatus'] | null;
   dm_status: CommentRecord['dmStatus'];
   dm_message_id: string | null;
@@ -159,7 +199,7 @@ interface PgRow {
 }
 
 const PG_COLUMNS = `comment_id, commenter_id, ig_account_id, media_id, username, text,
-              matched_keyword, follow_status, dm_status, dm_message_id,
+              matched_keyword, resource_link, follow_status, dm_status, dm_message_id,
               last_click_event_id, error, received_at`;
 
 function mapPgRow(row: PgRow): CommentRecord {
@@ -171,6 +211,7 @@ function mapPgRow(row: PgRow): CommentRecord {
     username: row.username,
     text: row.text,
     matchedKeyword: row.matched_keyword,
+    resourceLink: row.resource_link,
     followStatus: row.follow_status ?? 'not_checked',
     dmStatus: row.dm_status,
     dmMessageId: row.dm_message_id,
@@ -201,6 +242,7 @@ export class PostgresCommentStore implements CommentStore {
              username        TEXT,
              text            TEXT NOT NULL,
              matched_keyword TEXT,
+             resource_link   TEXT,
              follow_status   TEXT,
              dm_status       TEXT NOT NULL,
              dm_message_id   TEXT,
@@ -214,6 +256,8 @@ export class PostgresCommentStore implements CommentStore {
              ADD COLUMN IF NOT EXISTS commenter_id TEXT;
            ALTER TABLE processed_comments
              ADD COLUMN IF NOT EXISTS last_click_event_id TEXT;
+           ALTER TABLE processed_comments
+             ADD COLUMN IF NOT EXISTS resource_link TEXT;
            CREATE INDEX IF NOT EXISTS processed_comments_received_at_idx
              ON processed_comments (received_at DESC);
            CREATE INDEX IF NOT EXISTS processed_comments_commenter_idx
@@ -228,8 +272,8 @@ export class PostgresCommentStore implements CommentStore {
     await this.ensureSchema();
     const result = await this.pool.query(
       `INSERT INTO processed_comments
-         (comment_id, commenter_id, ig_account_id, media_id, username, text, matched_keyword, follow_status, dm_status, dm_message_id, last_click_event_id, error, received_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         (comment_id, commenter_id, ig_account_id, media_id, username, text, matched_keyword, resource_link, follow_status, dm_status, dm_message_id, last_click_event_id, error, received_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        ON CONFLICT (comment_id) DO NOTHING
        RETURNING comment_id`,
       [
@@ -240,6 +284,7 @@ export class PostgresCommentStore implements CommentStore {
         record.username,
         record.text,
         record.matchedKeyword,
+        record.resourceLink,
         record.followStatus,
         record.dmStatus,
         record.dmMessageId,
@@ -257,6 +302,7 @@ export class PostgresCommentStore implements CommentStore {
       commenterId: 'commenter_id',
       dmStatus: 'dm_status',
       matchedKeyword: 'matched_keyword',
+      resourceLink: 'resource_link',
       followStatus: 'follow_status',
       dmMessageId: 'dm_message_id',
       lastClickEventId: 'last_click_event_id',
@@ -301,6 +347,38 @@ export class PostgresCommentStore implements CommentStore {
       [commenterId],
     );
     return result.rows[0] ? mapPgRow(result.rows[0]) : null;
+  }
+
+  async findPendingByCommentId(commentId: string): Promise<CommentRecord | null> {
+    await this.ensureSchema();
+    const result = await this.pool.query<PgRow>(
+      `SELECT ${PG_COLUMNS}
+         FROM processed_comments
+        WHERE comment_id = $1
+          AND dm_status IN ('prompt_sent', 'follow_prompt_sent')
+        LIMIT 1`,
+      [commentId],
+    );
+    return result.rows[0] ? mapPgRow(result.rows[0]) : null;
+  }
+
+  async hasHandledCommentForUserMedia(
+    commenterId: string,
+    mediaId: string,
+    excludeCommentId: string,
+  ): Promise<boolean> {
+    await this.ensureSchema();
+    const result = await this.pool.query(
+      `SELECT 1
+         FROM processed_comments
+        WHERE commenter_id = $1
+          AND media_id = $2
+          AND comment_id <> $3
+          AND dm_status IN ('processing', 'checking_follow', 'prompt_sent', 'follow_prompt_sent', 'link_sent', 'sent')
+        LIMIT 1`,
+      [commenterId, mediaId, excludeCommentId],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async tryClaimClick(commentId: string, eventId: string): Promise<CommentRecord | null> {

@@ -1,4 +1,4 @@
-import type { AppConfig } from './config';
+import { resolveResourceLink, type AppConfig } from './config';
 import {
   getUserFollowStatus,
   sendMessageToUser,
@@ -8,6 +8,7 @@ import {
 import { findKeyword } from './keywords';
 import type { CommentStore } from './store';
 import {
+  ANY_COMMENT_TRIGGER,
   GET_LINK_PAYLOAD,
   type CommentRecord,
   type FollowStatus,
@@ -64,13 +65,44 @@ const MAX_DM_CHARS = 1000;
 
 export function renderDmMessage(
   template: string,
-  values: { username: string | null; keyword: string | null },
+  values: { username: string | null; keyword: string | null; link?: string | null },
 ): string {
   const username = values.username ? `@${values.username}` : 'there';
-  return template
+  const link = values.link ?? '';
+  let rendered = template
     .replaceAll('{username}', username)
     .replaceAll('{keyword}', values.keyword ?? '')
-    .slice(0, MAX_DM_CHARS);
+    .replaceAll('{link}', link);
+  if (link && !template.includes('{link}')) rendered = `${rendered} ${link}`;
+  return rendered.slice(0, MAX_DM_CHARS);
+}
+
+function matchComment(comment: ParsedComment, config: AppConfig): string | null {
+  if (config.commentMatchMode === 'any') {
+    return comment.text.trim() ? ANY_COMMENT_TRIGGER : null;
+  }
+  return findKeyword(comment.text, config.keywords);
+}
+
+function keywordForMessage(matchedKeyword: string | null): string {
+  return matchedKeyword === ANY_COMMENT_TRIGGER ? '' : (matchedKeyword ?? '');
+}
+
+function getLinkPayloadForComment(commentId: string): string {
+  return `${GET_LINK_PAYLOAD}:${commentId}`;
+}
+
+function commentIdFromGetLinkPayload(payload: string | null): string | null {
+  const prefix = `${GET_LINK_PAYLOAD}:`;
+  return payload?.startsWith(prefix) ? payload.slice(prefix.length) || null : null;
+}
+
+function usesPerMediaLinks(config: AppConfig): boolean {
+  return (
+    Object.keys(config.mediaLinks).length > 0 ||
+    Boolean(config.defaultLinkUrl) ||
+    config.dmMessage.includes('{link}')
+  );
 }
 
 function toRecord(comment: ParsedComment, now: Date): CommentRecord {
@@ -82,6 +114,7 @@ function toRecord(comment: ParsedComment, now: Date): CommentRecord {
     username: comment.username,
     text: comment.text,
     matchedKeyword: null,
+    resourceLink: null,
     followStatus: 'not_checked',
     dmStatus: 'processing',
     dmMessageId: null,
@@ -182,13 +215,61 @@ export async function processCommentEvents(
         continue;
       }
 
-      const matchedKeyword = findKeyword(comment.text, config.keywords);
+      const matchedKeyword = matchComment(comment, config);
       if (!matchedKeyword) {
         await store.update(comment.commentId, { dmStatus: 'not_matched' });
         summary.notMatched += 1;
         continue;
       }
+
+      // In any-comment mode, one person gets at most one prompt/link flow
+      // per Reel/post; extra comments on the same media are recorded only.
+      if (
+        config.commentMatchMode === 'any' &&
+        comment.commenterId &&
+        comment.mediaId &&
+        (await store.hasHandledCommentForUserMedia(
+          comment.commenterId,
+          comment.mediaId,
+          comment.commentId,
+        ))
+      ) {
+        await store.update(comment.commentId, {
+          dmStatus: 'skipped_duplicate_for_media',
+          matchedKeyword,
+          error: 'This user already has a prompt or link flow for this Reel/post',
+        });
+        summary.duplicates += 1;
+        continue;
+      }
       summary.matched += 1;
+
+      // Select this Reel/post's resource now and store it on the record, so
+      // a later button tap cannot accidentally deliver another Reel's link.
+      const resourceLink = resolveResourceLink(config, comment.mediaId);
+      if (config.mediaLinksConfigError) {
+        await store.update(comment.commentId, {
+          dmStatus: 'failed',
+          matchedKeyword,
+          resourceLink: null,
+          error: config.mediaLinksConfigError,
+        });
+        summary.failed += 1;
+        continue;
+      }
+      if (usesPerMediaLinks(config) && !resourceLink) {
+        await store.update(comment.commentId, {
+          dmStatus: 'failed',
+          matchedKeyword,
+          resourceLink: null,
+          error: comment.mediaId
+            ? `No link configured for media ${comment.mediaId}; add it to MEDIA_LINKS_JSON or set DEFAULT_LINK_URL`
+            : 'Webhook did not include a media id and DEFAULT_LINK_URL is not configured',
+        });
+        summary.failed += 1;
+        continue;
+      }
+      await store.update(comment.commentId, { matchedKeyword, resourceLink });
 
       let followStatus: FollowStatus = 'not_checked';
 
@@ -277,26 +358,15 @@ export async function processCommentEvents(
         summary.failed += 1;
         continue;
       }
-      if (!config.dmMessage) {
-        await store.update(comment.commentId, {
-          dmStatus: 'failed',
-          matchedKeyword,
-          followStatus,
-          error: 'DM_MESSAGE is not configured',
-        });
-        summary.failed += 1;
-        continue;
-      }
-
       const result = await sendDm({
         igAccountId: comment.igAccountId ?? config.igAccountId ?? 'me',
         commentId: comment.commentId,
         message: renderDmMessage(config.introMessage, {
           username: comment.username,
-          keyword: matchedKeyword,
+          keyword: keywordForMessage(matchedKeyword),
         }),
         quickReplyTitle: config.getLinkButtonText,
-        quickReplyPayload: GET_LINK_PAYLOAD,
+        quickReplyPayload: getLinkPayloadForComment(comment.commentId),
         accessToken: config.accessToken,
         graphVersion: config.graphVersion,
       });
@@ -315,7 +385,7 @@ export async function processCommentEvents(
     } catch (error) {
       await store.update(comment.commentId, {
         dmStatus: 'failed',
-        matchedKeyword: findKeyword(comment.text, config.keywords),
+        matchedKeyword: matchComment(comment, config),
         error: safeErrorMessage(error, config.accessToken),
       });
       summary.failed += 1;
@@ -326,7 +396,7 @@ export async function processCommentEvents(
 }
 
 function isGetLinkTrigger(event: ParsedMessageEvent, config: AppConfig): boolean {
-  if (event.payload === GET_LINK_PAYLOAD) return true;
+  if (event.payload === GET_LINK_PAYLOAD || commentIdFromGetLinkPayload(event.payload)) return true;
   const text = event.text.trim().toLowerCase();
   if (!text) return false;
   return new Set([
@@ -399,7 +469,18 @@ export async function processMessageEvents(
     }
     summary.clicks += 1;
 
-    const pending = await store.findLatestPendingByCommenterId(event.senderId);
+    // New buttons encode the exact comment/Reel in their payload. This
+    // matters when one user has pending prompts from different Reels:
+    // never fall back to a different Reel for an exact-payload tap.
+    const payloadCommentId = commentIdFromGetLinkPayload(event.payload);
+    let pending: CommentRecord | null;
+    if (payloadCommentId) {
+      const exactPending = await store.findPendingByCommentId(payloadCommentId);
+      pending =
+        exactPending && exactPending.commenterId === event.senderId ? exactPending : null;
+    } else {
+      pending = await store.findLatestPendingByCommenterId(event.senderId);
+    }
     if (!pending) {
       summary.noPending += 1;
       continue;
@@ -419,9 +500,14 @@ export async function processMessageEvents(
       summary.failed += 1;
       continue;
     }
-    if (!config.dmMessage) {
+    const resourceLink = pending.resourceLink ?? resolveResourceLink(config, pending.mediaId);
+    if (!resourceLink && (config.mediaLinksConfigError || usesPerMediaLinks(config))) {
       await store.update(pending.commentId, {
-        error: 'DM_MESSAGE is not configured',
+        error:
+          config.mediaLinksConfigError ??
+          (pending.mediaId
+            ? `No link configured for media ${pending.mediaId}; add it to MEDIA_LINKS_JSON or set DEFAULT_LINK_URL`
+            : 'No DEFAULT_LINK_URL configured for this comment'),
       });
       summary.failed += 1;
       continue;
@@ -455,10 +541,10 @@ export async function processMessageEvents(
             recipientId: event.senderId,
             message: renderDmMessage(promptTemplate, {
               username: claimed.username,
-              keyword: claimed.matchedKeyword,
+              keyword: keywordForMessage(claimed.matchedKeyword),
             }),
             quickReplyTitle: config.tryAgainButtonText,
-            quickReplyPayload: GET_LINK_PAYLOAD,
+            quickReplyPayload: getLinkPayloadForComment(claimed.commentId),
             accessToken: config.accessToken,
             graphVersion: config.graphVersion,
           });
@@ -466,6 +552,7 @@ export async function processMessageEvents(
           await store.update(claimed.commentId, {
             dmStatus: 'follow_prompt_sent',
             followStatus: latestFollowStatus,
+            resourceLink,
             dmMessageId: promptResult.messageId,
             error:
               followResult.status === 'unverified'
@@ -484,7 +571,8 @@ export async function processMessageEvents(
         recipientId: event.senderId,
         message: renderDmMessage(config.dmMessage, {
           username: claimed.username,
-          keyword: claimed.matchedKeyword,
+          keyword: keywordForMessage(claimed.matchedKeyword),
+          link: resourceLink,
         }),
         accessToken: config.accessToken,
         graphVersion: config.graphVersion,
@@ -493,6 +581,7 @@ export async function processMessageEvents(
       await store.update(claimed.commentId, {
         dmStatus: 'link_sent',
         followStatus: latestFollowStatus,
+        resourceLink,
         dmMessageId: linkResult.messageId,
         error: null,
       });
@@ -502,6 +591,7 @@ export async function processMessageEvents(
       await store.update(claimed.commentId, {
         dmStatus: previousPendingStatus,
         followStatus: latestFollowStatus,
+        resourceLink,
         error: safeErrorMessage(error, config.accessToken),
       });
       summary.failed += 1;

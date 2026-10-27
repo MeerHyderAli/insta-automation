@@ -78,6 +78,7 @@ tbody tr:last-child td { border-bottom: none; }
 .pill-sent, .pill-link_sent { background: rgba(47, 191, 113, 0.15); color: var(--ok); }
 .pill-prompt_sent { background: rgba(77, 163, 255, 0.15); color: var(--info); }
 .pill-checking_follow, .pill-follow_prompt_sent { background: rgba(245, 166, 35, 0.15); color: var(--warn); }
+.pill-skipped_duplicate_for_media { background: rgba(245, 166, 35, 0.15); color: var(--warn); }
 .pill-failed { background: rgba(245, 83, 77, 0.15); color: var(--bad); }
 .pill-not_matched, .pill-skipped_own_comment, .pill-processing { background: rgba(151, 160, 181, 0.15); color: var(--muted); }
 .pill-dry_run, .pill-skipped_follow_unverified { background: rgba(245, 166, 35, 0.15); color: var(--warn); }

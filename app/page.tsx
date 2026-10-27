@@ -17,6 +17,7 @@ const STATUS_LABEL: Record<DmStatus, string> = {
   skipped_own_comment: 'Own comment',
   skipped_not_following: 'Not following — no DM',
   skipped_follow_unverified: 'Follow unverified — no DM',
+  skipped_duplicate_for_media: 'Already handled for this Reel/post',
   processing: 'Processing…',
 };
 
@@ -62,6 +63,10 @@ export default async function DashboardPage() {
     ['prompt_sent', 'follow_prompt_sent', 'checking_follow'].includes(record.dmStatus),
   ).length;
   const matched = records.filter((record) => record.matchedKeyword).length;
+  const triggerLabel = (record: CommentRecord): string =>
+    record.matchedKeyword === '*'
+      ? 'ANY'
+      : (record.matchedKeyword ?? '—');
   const failed = records.filter((record) => record.dmStatus === 'failed').length;
 
   return (
@@ -72,8 +77,9 @@ export default async function DashboardPage() {
           <div>
             <div className="title">Comment-to-DM</div>
             <div className="subtitle">
-              Keyword comments are follow-checked, receive a thanks prompt with a button,
-              then are follow-checked again before the link is sent.
+              {status.commentMatchMode === 'any'
+                ? 'Any comment is follow-checked, receives a thanks prompt with a button, then is follow-checked again before that Reel’s link is sent.'
+                : 'Keyword comments are follow-checked, receive a thanks prompt with a button, then are follow-checked again before the link is sent.'}
             </div>
           </div>
         </div>
@@ -121,7 +127,7 @@ export default async function DashboardPage() {
         </div>
         <div className="stat">
           <div className="stat-value">{matched}</div>
-          <div className="stat-label">Keyword matches</div>
+          <div className="stat-label">Trigger matches</div>
         </div>
         <div className="stat">
           <div className="stat-value">{linkSent}</div>
@@ -169,8 +175,42 @@ export default async function DashboardPage() {
           <li>
             <StatusDot state={status.dmMessageConfigured ? 'ok' : 'missing'} />
             <span>
-              Final link message {status.dmMessageConfigured ? 'configured' : 'missing'}{' '}
-              <span className="muted">(<code>DM_MESSAGE</code>)</span>
+              Final link template {status.dmMessageConfigured ? 'configured' : 'missing'}{' '}
+              <span className="muted">
+                (<code>DM_MESSAGE</code>
+                {status.dmMessageUsesLinkPlaceholder ? ', uses {link}' : ''})
+              </span>
+            </span>
+          </li>
+          <li>
+            <StatusDot state="ok" />
+            <span>
+              Comment trigger:{' '}
+              {status.commentMatchMode === 'any'
+                ? 'any non-empty comment'
+                : 'configured keywords'}{' '}
+              <span className="muted">(<code>COMMENT_MATCH_MODE</code>)</span>
+            </span>
+          </li>
+          <li>
+            <StatusDot
+              state={
+                !status.mediaLinksConfigValid ||
+                (status.mediaLinkCount === 0 &&
+                  !status.defaultLinkConfigured &&
+                  status.dmMessageUsesLinkPlaceholder)
+                  ? 'missing'
+                  : status.mediaLinkCount > 0 || status.defaultLinkConfigured
+                    ? 'ok'
+                    : 'warn'
+              }
+            />
+            <span>
+              Per-Reel links: {status.mediaLinkCount} mapped
+              {status.defaultLinkConfigured ? ', fallback link configured' : ', no fallback link'}{' '}
+              <span className="muted">
+                (<code>MEDIA_LINKS_JSON</code> / <code>DEFAULT_LINK_URL</code>)
+              </span>
             </span>
           </li>
           <li>
@@ -206,7 +246,11 @@ export default async function DashboardPage() {
           </li>
         </ul>
         <div className="small muted" style={{ marginTop: 12 }}>
-          Keywords (case-insensitive, whole word):
+          {status.commentMatchMode === 'any' ? (
+            <>Any-comment mode is on: the keyword list below is ignored unless you switch back.</>
+          ) : (
+            <>Keywords (case-insensitive, whole word):</>
+          )}
           <div className="chips">
             {status.keywords.map((keyword) => (
               <span className="chip" key={keyword}>{keyword}</span>
@@ -232,7 +276,8 @@ export default async function DashboardPage() {
                   <th>Received</th>
                   <th>Commenter</th>
                   <th>Comment</th>
-                  <th>Keyword</th>
+                  <th>Reel / media ID</th>
+                  <th>Trigger</th>
                   <th>Latest follow check</th>
                   <th>DM</th>
                   <th>Detail</th>
@@ -244,7 +289,8 @@ export default async function DashboardPage() {
                     <td className="nowrap muted">{formatTime(record.receivedAt)}</td>
                     <td className="nowrap">{record.username ? `@${record.username}` : '—'}</td>
                     <td className="comment-text">{record.text || <span className="muted">(empty)</span>}</td>
-                    <td>{record.matchedKeyword ? <code>{record.matchedKeyword}</code> : <span className="muted">—</span>}</td>
+                    <td>{record.mediaId ? <code>{record.mediaId}</code> : <span className="muted">—</span>}</td>
+                    <td>{record.matchedKeyword ? <code>{triggerLabel(record)}</code> : <span className="muted">—</span>}</td>
                     <td>
                       <span className={`pill follow-${record.followStatus ?? 'not_checked'}`}>
                         {FOLLOW_LABEL[record.followStatus ?? 'not_checked']}
@@ -271,9 +317,9 @@ export default async function DashboardPage() {
       </section>
 
       <footer className="footer">
-        Each keyword comment can receive one private-reply prompt. Follow status is checked
-        before that prompt and checked again after the button tap; “Link sent” is shown only when
-        the second check passes and Instagram confirms the follow-up message with a message id.
+        Each triggering comment can receive one private-reply prompt, tied to that comment’s
+        Reel/post. Follow status is checked before that prompt and again after the button tap;
+        “Link sent” is shown only when the second check passes and Instagram confirms the message.
       </footer>
     </main>
   );

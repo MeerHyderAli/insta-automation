@@ -1,5 +1,8 @@
 export const GET_LINK_PAYLOAD = 'GET_LINK_V1';
 
+/** Stored in matchedKeyword when COMMENT_MATCH_MODE=any triggers. */
+export const ANY_COMMENT_TRIGGER = '*';
+
 export type DmStatus =
   | 'processing'
   | 'checking_follow'
@@ -12,7 +15,8 @@ export type DmStatus =
   | 'dry_run'
   | 'skipped_own_comment'
   | 'skipped_not_following'
-  | 'skipped_follow_unverified';
+  | 'skipped_follow_unverified'
+  | 'skipped_duplicate_for_media';
 
 export type FollowStatus = 'following' | 'not_following' | 'unverified' | 'not_checked';
 
@@ -24,6 +28,8 @@ export interface CommentRecord {
   username: string | null;
   text: string;
   matchedKeyword: string | null;
+  /** Resource URL selected for this comment's Reel/post (media id). */
+  resourceLink: string | null;
   followStatus: FollowStatus;
   dmStatus: DmStatus;
   dmMessageId: string | null;
@@ -39,6 +45,7 @@ export type CommentPatch = Partial<
     | 'commenterId'
     | 'dmStatus'
     | 'matchedKeyword'
+    | 'resourceLink'
     | 'followStatus'
     | 'dmMessageId'
     | 'lastClickEventId'

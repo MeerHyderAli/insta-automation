@@ -12,8 +12,11 @@ export const DEFAULT_NOT_FOLLOWING_MESSAGE =
   'You are not following this account yet. Please follow first, then tap “Try again” below to get your link.';
 export const DEFAULT_FOLLOW_UNVERIFIED_MESSAGE =
   'I could not verify your follow status yet. Please make sure you follow this account, then tap “Try again” below.';
+export const DEFAULT_DM_MESSAGE = 'Here is your link: {link}';
 export const DEFAULT_GET_LINK_BUTTON_TEXT = 'Click to get link';
 export const DEFAULT_TRY_AGAIN_BUTTON_TEXT = 'Try again';
+
+export type CommentMatchMode = 'keywords' | 'any';
 
 export interface AppConfig {
   accessToken: string | null;
@@ -21,9 +24,15 @@ export interface AppConfig {
   verifyToken: string | null;
   graphVersion: string;
   igAccountId: string | null;
+  commentMatchMode: CommentMatchMode;
   keywords: string[];
   introMessage: string;
-  dmMessage: string | null;
+  dmMessage: string;
+  /** Reel/post media id -> resource URL for comments on that media. */
+  mediaLinks: Record<string, string>;
+  mediaLinksConfigError: string | null;
+  /** Fallback URL when a comment's media id has no specific mapping. */
+  defaultLinkUrl: string | null;
   notFollowingMessage: string;
   followUnverifiedMessage: string;
   getLinkButtonText: string;
@@ -71,6 +80,58 @@ export function normalizeGraphVersion(raw: string | null | undefined): string {
   return value.startsWith('v') ? value : `v${value}`;
 }
 
+export function parseCommentMatchMode(raw: string | undefined): CommentMatchMode {
+  const value = clean(raw)?.toLowerCase();
+  return value === 'any' || value === 'all' || value === '*' ? 'any' : 'keywords';
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+export function parseMediaLinks(
+  raw: string | undefined,
+): { links: Record<string, string>; error: string | null } {
+  const value = clean(raw);
+  if (!value) return { links: {}, error: null };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return { links: {}, error: 'MEDIA_LINKS_JSON is not valid JSON' };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return {
+      links: {},
+      error: 'MEDIA_LINKS_JSON must be a JSON object of media id to URL',
+    };
+  }
+
+  const links: Record<string, string> = {};
+  for (const [mediaId, rawUrl] of Object.entries(parsed as Record<string, unknown>)) {
+    const cleanMediaId = mediaId.trim();
+    const url = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+    if (!cleanMediaId || !isHttpUrl(url)) {
+      return {
+        links: {},
+        error: 'MEDIA_LINKS_JSON entries must map each media id to a valid http(s) URL',
+      };
+    }
+    links[cleanMediaId] = url;
+  }
+  return { links, error: null };
+}
+
+export function resolveResourceLink(config: AppConfig, mediaId: string | null): string | null {
+  return (mediaId ? config.mediaLinks[mediaId] : undefined) ?? config.defaultLinkUrl;
+}
+
 export function parseKeywords(raw: string | undefined): string[] {
   if (!raw?.trim()) return [...DEFAULT_KEYWORDS];
   const seen = new Set<string>();
@@ -86,6 +147,11 @@ export function parseKeywords(raw: string | undefined): string[] {
 }
 
 export function getConfig(env: Env = process.env): AppConfig {
+  const mediaLinks = parseMediaLinks(env.MEDIA_LINKS_JSON);
+  const rawDefaultLinkUrl = clean(env.DEFAULT_LINK_URL);
+  const defaultLinkUrl = rawDefaultLinkUrl && isHttpUrl(rawDefaultLinkUrl) ? rawDefaultLinkUrl : null;
+  const defaultLinkError =
+    rawDefaultLinkUrl && !defaultLinkUrl ? 'DEFAULT_LINK_URL must be a valid http(s) URL' : null;
   const dataFile =
     clean(env.DATA_FILE) ??
     (env.VERCEL
@@ -98,9 +164,13 @@ export function getConfig(env: Env = process.env): AppConfig {
     verifyToken: clean(env.META_WEBHOOK_VERIFY_TOKEN),
     graphVersion: normalizeGraphVersion(env.META_GRAPH_VERSION),
     igAccountId: clean(env.IG_ACCOUNT_ID),
+    commentMatchMode: parseCommentMatchMode(env.COMMENT_MATCH_MODE),
     keywords: parseKeywords(env.COMMENT_KEYWORDS),
     introMessage: cleanOrDefault(env.INTRO_DM_MESSAGE, DEFAULT_INTRO_DM_MESSAGE),
-    dmMessage: clean(env.DM_MESSAGE),
+    dmMessage: cleanOrDefault(env.DM_MESSAGE, DEFAULT_DM_MESSAGE),
+    mediaLinks: mediaLinks.links,
+    mediaLinksConfigError: mediaLinks.error ?? defaultLinkError,
+    defaultLinkUrl,
     notFollowingMessage: cleanOrDefault(
       env.NOT_FOLLOWING_MESSAGE,
       DEFAULT_NOT_FOLLOWING_MESSAGE,
@@ -138,9 +208,14 @@ export function getConfigStatus(config: AppConfig) {
     verifyTokenConfigured: Boolean(config.verifyToken),
     introMessageConfigured: Boolean(config.introMessage),
     dmMessageConfigured: Boolean(config.dmMessage),
+    dmMessageUsesLinkPlaceholder: config.dmMessage.includes('{link}'),
     igAccountIdConfigured: Boolean(config.igAccountId),
     graphVersion: config.graphVersion,
+    commentMatchMode: config.commentMatchMode,
     keywords: config.keywords,
+    mediaLinkCount: Object.keys(config.mediaLinks).length,
+    mediaLinksConfigValid: config.mediaLinksConfigError === null,
+    defaultLinkConfigured: Boolean(config.defaultLinkUrl),
     getLinkButtonText: config.getLinkButtonText,
     tryAgainButtonText: config.tryAgainButtonText,
     requireFollowBeforePrompt: config.requireFollowBeforePrompt,

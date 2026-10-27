@@ -14,6 +14,7 @@ function makeRecord(commentId: string, receivedAt: string): CommentRecord {
     username: 'alice',
     text: 'LINK',
     matchedKeyword: null,
+    resourceLink: null,
     followStatus: 'not_checked',
     dmStatus: 'processing',
     dmMessageId: null,
@@ -57,6 +58,9 @@ describe('FileCommentStore click claiming', () => {
     await store.update('comment-9', { dmStatus: 'prompt_sent' });
 
     expect((await store.findLatestPendingByCommenterId('user-9'))?.commentId).toBe('comment-9');
+    expect((await store.findPendingByCommentId('comment-9'))?.commentId).toBe('comment-9');
+    expect(await store.hasHandledCommentForUserMedia('user-9', 'media-1', 'another-comment')).toBe(true);
+    expect(await store.hasHandledCommentForUserMedia('user-9', 'media-1', 'comment-9')).toBe(false);
     const claimed = await store.tryClaimClick('comment-9', 'click-1');
     expect(claimed).toMatchObject({ dmStatus: 'checking_follow', lastClickEventId: 'click-1' });
     expect(await store.tryClaimClick('comment-9', 'click-1')).toBeNull();

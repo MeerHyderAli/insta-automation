@@ -1,16 +1,21 @@
 # Comment-to-DM for Instagram (single account)
 
 A small [Next.js](https://nextjs.org/) app for **one Instagram professional account**.
-When someone comments your keyword on a post or Reel, the app verifies that
-the commenter follows you, sends a “Thanks for commenting” private reply with
-a **Click to get link** button, then verifies the follow **again** after the
-button tap before sending the link — using only the official Instagram API
-with Instagram Login.
+When someone comments on a post or Reel, the app verifies that the
+commenter follows you, sends a “Thanks for commenting” private reply with a
+**Click to get link** button, then verifies the follow **again** after the
+button tap before sending **that Reel/post's link** — using only the
+official Instagram API with Instagram Login. The trigger can be configured
+keywords or **any non-empty comment**.
 
 - Webhook route (`/api/webhook`) verifies Meta's `X-Hub-Signature-256` and
   handles both `comments` events and messaging events (button taps).
-- Case-insensitive, whole-word keyword matching, including your typo
-  variants (configurable list).
+- Two trigger modes: case-insensitive, whole-word keywords (including your
+  typo variants), or **any non-empty comment** (`COMMENT_MATCH_MODE=any`).
+- **Different links per Reel/post:** the comment's media id selects a URL
+  from `MEDIA_LINKS_JSON` (with an optional fallback). The button payload
+  identifies the exact comment, so pending prompts from different Reels
+  cannot deliver each other's links.
 - **Follow status is checked twice, fail-closed both times:** check #1 runs
   before the thanks prompt is sent; check #2 runs again when the user taps
   the button. The link is sent only if Meta's `is_user_follow_business`
@@ -37,7 +42,7 @@ cp .env.example .env.local
 ```
 
 Edit `.env.local`: set any value for `META_APP_SECRET`, keep
-`DRY_RUN=true`, set your keywords/messages, and temporarily set
+`DRY_RUN=true`, set your trigger mode, keywords/messages, and temporarily set
 `REQUIRE_FOLLOW_BEFORE_PROMPT=false` and `REQUIRE_FOLLOW_FOR_LINK=false`
 for this sender-pipeline simulation. Fake local users cannot be verified
 through Meta, so with the production follow checks enabled they are blocked
@@ -56,8 +61,8 @@ npm run simulate -- "send me the lnik" bob
 npm run simulate -- "great post!" carol
 ```
 
-Open <http://localhost:3000> — you should see three comments: two "dry run"
-matches and one "no keyword". Run the first simulate command again with the
+Open <http://localhost:3000> — in the default keywords mode you should see
+three comments: two "dry run" matches and one "no keyword". Run the first simulate command again with the
 same comment id (the script prints the exact command) to prove dedupe:
 the response reports `comments.duplicates: 1` and no second prompt/link
 would be sent. The button stage is covered by the unit tests and the live
@@ -86,13 +91,16 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 | `META_WEBHOOK_VERIFY_TOKEN` | yes | A long random string **you invent**, pasted into Meta's webhook config. |
 | `INTRO_DM_MESSAGE` | no | First private-reply prompt, sent only after check #1 passes. Default: “Thanks for commenting, {username}! Tap the button below to get your link.” |
 | `GET_LINK_BUTTON_TEXT` | no | Quick-reply button label. Default `Click to get link`; Meta truncates titles after 20 characters, so the app caps this at 20. |
-| `DM_MESSAGE` | for real links | Final message, including your link, sent only after the button tap and check #2. `{username}` → e.g. `@alice`; `{keyword}` → matched word. |
+| `DM_MESSAGE` | no | Final message template sent after the button tap and check #2. Default `Here is your link: {link}`. `{username}` → e.g. `@alice`; `{keyword}` → matched word (empty in any-comment mode); `{link}` → selected Reel/post URL. |
+| `MEDIA_LINKS_JSON` | for per-Reel links | Single-line JSON object mapping Instagram **media id → URL**, e.g. `{"179...1":"https://.../a","179...2":"https://.../b"}`. Copy media ids from the dashboard's Reel/media ID column. Invalid JSON/URLs fail closed. |
+| `DEFAULT_LINK_URL` | no | Optional fallback URL for media with no `MEDIA_LINKS_JSON` entry. Leave unset if a new/unmapped Reel must receive nothing rather than a default link. |
 | `NOT_FOLLOWING_MESSAGE` / `FOLLOW_UNVERIFIED_MESSAGE` | no | Prompts sent when check #2 returns false/unverified. Each carries a Try again button so the user can follow and re-check without commenting again. |
 | `TRY_AGAIN_BUTTON_TEXT` | no | Retry button label. Default `Try again` (max 20 characters). |
 | `REQUIRE_FOLLOW_BEFORE_PROMPT` | yes, keep `true` | Check #1, before the thanks prompt. False/unverified = no prompt DM at all. |
 | `REQUIRE_FOLLOW_FOR_LINK` | yes, keep `true` | Check #2, after the button tap and before `DM_MESSAGE`. False/unverified = follow prompt, no link. |
 | `REQUIRE_FOLLOW_TO_SEND` | legacy fallback | Older single-check setting. If either specific flag above is unset, this value is used for it. A specific flag always wins. |
-| `COMMENT_KEYWORDS` | no | Comma-separated, case-insensitive, whole-word. Your keyword first, then typos. Default: `link,links,lnik,likn,lnk,liink,linkk` — change these to yours. |
+| `COMMENT_MATCH_MODE` | no | `keywords` (default) or `any`. In `any` mode every non-empty comment triggers, with at most one prompt/link flow per user per Reel/post. |
+| `COMMENT_KEYWORDS` | keywords mode | Comma-separated, case-insensitive, whole-word. Your keyword first, then typos. Default: `link,links,lnik,likn,lnk,liink,linkk` — change these to yours. Ignored in `any` mode. |
 | `DATABASE_URL` | on serverless | Postgres connection string for durable dedupe storage. **Required on Vercel.** Empty = local JSON file store. |
 | `DRY_RUN` | no | `true` = record matches but never call Instagram. Must be `false` in production. |
 | `IG_ACCOUNT_ID` | no | Your professional account id; if set, events for other accounts are ignored. |
@@ -128,7 +136,8 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 Meta verifies your webhook URL the moment you save it, so the app must be
 live first. Deploy with at least `META_APP_SECRET`,
 `META_WEBHOOK_VERIFY_TOKEN`, `DATABASE_URL` (on Vercel),
-`COMMENT_KEYWORDS`, `INTRO_DM_MESSAGE` and `DM_MESSAGE` set (see below).
+`COMMENT_MATCH_MODE`, any `COMMENT_KEYWORDS`, `INTRO_DM_MESSAGE`,
+`DM_MESSAGE`, and your per-Reel/default link settings set (see below).
 `IG_ACCESS_TOKEN` can be added after Step 5.
 
 ### Step 4 — Configure the webhook
@@ -193,9 +202,13 @@ This runs
    This matters because Meta grants profile-access consent when a user
    messages the account; a comment alone may leave follow status
    unverifiable.
-2. From that second account, comment your keyword (e.g. `LINK`) on one of
-   your posts/Reels. (Commenting from your own account is recorded as
-   "Own comment" and never DMs you.)
+2. From that second account, comment on one of your posts/Reels — your
+   keyword in keywords mode, or anything in any-comment mode. (Commenting
+   from your own account is recorded as "Own comment" and never DMs you.)
+   The dashboard row shows that Reel/post's **media id**: add it to
+   `MEDIA_LINKS_JSON` with that Reel's URL (or set `DEFAULT_LINK_URL`) and
+   redeploy before the public test, otherwise an unmapped Reel fails closed
+   with “No link configured for media …” and nobody is prompted.
 3. The commenter should receive **only** the “Thanks for commenting”
    prompt with a **Click to get link** button — no link yet. Tap it: the app
    checks the follow a second time and then sends the link. The dashboard
@@ -274,7 +287,8 @@ Someone comments "LINK please!" on your Reel
         ▼
 Meta comments webhook ─► verify X-Hub-Signature-256 (raw body)
                          CLAIM comment id                 ◄─ duplicate? stop
-                         keyword match?                   ◄─ no: record only
+                         trigger? (keyword / ANY)       ◄─ no: record only
+                         resolve link for media id      ◄─ unmapped: no DM
                          FOLLOW CHECK #1
                            GET /<IGSID>?fields=is_user_follow_business
                                                           ◄─ not true: no DM
@@ -285,7 +299,7 @@ Meta comments webhook ─► verify X-Hub-Signature-256 (raw body)
         ▼
 Meta messages webhook ─► CLAIM tap event id               ◄─ duplicate? stop
                          FOLLOW CHECK #2 (again)
-                           ├─ true        ─► send DM_MESSAGE (the link)
+                           ├─ true        ─► send DM_MESSAGE with that Reel's {link}
                            └─ false/unknown ─► send follow prompt + [Try again]
 Dashboard (/) ◄── last 50 records from the same store
 ```
@@ -308,7 +322,7 @@ Files:
 | `scripts/simulate-webhook.mjs` | Signed fake webhook for local testing |
 | `scripts/subscribe-webhooks.mjs` | `POST /me/subscribed_apps` one-time setup |
 | `scripts/refresh-token.mjs` | Long-lived token refresh helper |
-| `test/` | 48 unit tests (signature, matching, parsing, dedupe, both follow checks, retry flow, API clients) |
+| `test/` | 54 unit tests (signature, keyword/any matching, per-Reel links, dedupe, both follow checks, retry flow, API clients) |
 
 ---
 
@@ -325,7 +339,7 @@ Files:
   The request shape is implemented and unit-tested; if Meta rejects that
   combination for your app/account, the record will show `failed` with
   Meta's error and no link will be sent. Verify this in Step 7 before
-  announcing the keyword publicly.
+  announcing the campaign publicly.
 - Messages to people who don't follow you may land in **Message requests**.
 - Rate limit for private replies to post/Reel comments: **750/hour per
   account** — far above what one account normally needs.
@@ -357,7 +371,9 @@ Files:
 | `403 Invalid signature` in logs | `META_APP_SECRET` doesn't match the app that sends the webhooks. |
 | DM status `failed` + code 190 / 463 | Token expired/invalid — refresh or regenerate, update env, redeploy. |
 | DM status `failed` + permission error | Token lacks `instagram_business_manage_messages` — add the permission, regenerate the token. |
-| “Not following — no DM” at the comment stage | Working as intended: check #1 returned `is_user_follow_business=false`, so no prompt was sent. The person must follow and make a new keyword comment. (After a prompt, a false check #2 instead sends the follow-and-Try-again message.) |
+| “Not following — no DM” at the comment stage | Working as intended: check #1 returned `is_user_follow_business=false`, so no prompt was sent. The person must follow and comment again. (After a prompt, a false check #2 instead sends the follow-and-Try-again message.) |
+| “No link configured for media …” | Add that dashboard media id to `MEDIA_LINKS_JSON` with the Reel's URL, or set `DEFAULT_LINK_URL`, then redeploy and comment again. No prompt is sent for an unmapped Reel. |
+| Comments trigger nothing in any-comment mode | Confirm `COMMENT_MATCH_MODE=any` on the deployed build (`/api/health`), the comment is non-empty, and the same user does not already have a prompt/link flow for that Reel. |
 | “Follow unverified — no DM” at the comment stage | Check #1 could not obtain a boolean, commonly because the commenter has not previously messaged your account to grant profile consent. The app sends nothing. Check Detail for Meta's error; token/permission problems can also appear here. |
 | Duplicate test comments all say `duplicates: 1` | Working as intended — that comment id was already claimed. Use a new comment (or new `-- id` in simulate). |
 | Dashboard shows old data after redeploy on Vercel | `DATABASE_URL` missing → ephemeral `/tmp` store. Add Postgres. |

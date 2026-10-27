@@ -22,9 +22,13 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     verifyToken: 'verify-me',
     graphVersion: 'v25.0',
     igAccountId: null,
+    commentMatchMode: 'keywords',
     keywords: ['link', 'lnik'],
     introMessage: 'Thanks for commenting, {username}! Tap the button below to get your link.',
     dmMessage: 'Here is your link: https://example.com/x',
+    mediaLinks: {},
+    mediaLinksConfigError: null,
+    defaultLinkUrl: null,
     notFollowingMessage: 'Please follow this account, then tap Try again.',
     followUnverifiedMessage: 'I could not verify your follow yet. Please tap Try again.',
     getLinkButtonText: 'Click to get link',
@@ -90,7 +94,7 @@ describe('processCommentEvents — first follow check + prompt', () => {
       commentId: 'comment-1',
       message: 'Thanks for commenting, @alice! Tap the button below to get your link.',
       quickReplyTitle: 'Click to get link',
-      quickReplyPayload: GET_LINK_PAYLOAD,
+      quickReplyPayload: `${GET_LINK_PAYLOAD}:comment-1`,
     });
     expect(sendDm.mock.calls[0][0].message).not.toContain('https://example.com/x');
 
@@ -272,6 +276,117 @@ describe('processCommentEvents — first follow check + prompt', () => {
   });
 });
 
+
+describe('comment match modes and per-Reel links', () => {
+  it('any non-empty comment triggers, but only one flow per user per Reel', async () => {
+    const store = tempStore();
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({
+      messageId: 'prompt-any',
+      recipientId: 'user-9',
+    }));
+    const deps = {
+      store,
+      config: testConfig({ commentMatchMode: 'any' }),
+      sendDm,
+    };
+
+    const first = await processCommentEvents(
+      [testComment({ commentId: 'comment-any-1', text: 'Great reel!' })],
+      deps,
+    );
+    const second = await processCommentEvents(
+      [testComment({ commentId: 'comment-any-2', text: 'Another comment' })],
+      deps,
+    );
+
+    expect(first).toMatchObject({ matched: 1, promptSent: 1 });
+    expect(second).toMatchObject({ matched: 0, promptSent: 0, duplicates: 1 });
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    const records = await store.list(50);
+    expect(records.find((record) => record.commentId === 'comment-any-1')).toMatchObject({
+      dmStatus: 'prompt_sent',
+      matchedKeyword: '*',
+    });
+    expect(records.find((record) => record.commentId === 'comment-any-2')).toMatchObject({
+      dmStatus: 'skipped_duplicate_for_media',
+      matchedKeyword: '*',
+    });
+  });
+
+  it('fails closed before any prompt when that Reel has no configured link', async () => {
+    const store = tempStore();
+    const sendDm = vi.fn(async (_input: SendDmInput) => ({ messageId: 'must-not-send' }));
+    const checkFollow = vi.fn(async (_input: CheckFollowInput) => ({
+      status: 'following' as const,
+    }));
+
+    const summary = await processCommentEvents(
+      [testComment({ commentId: 'comment-unmapped', mediaId: 'media-unknown', text: 'anything' })],
+      {
+        store,
+        config: testConfig({
+          commentMatchMode: 'any',
+          dmMessage: 'Here is your link: {link}',
+          mediaLinks: { 'media-1': 'https://example.com/reel-a' },
+        }),
+        sendDm,
+        checkFollow,
+      },
+    );
+
+    expect(summary).toMatchObject({ matched: 1, promptSent: 0, failed: 1 });
+    expect(sendDm).not.toHaveBeenCalled();
+    expect(checkFollow).not.toHaveBeenCalled();
+    expect((await store.list(50))[0]).toMatchObject({
+      dmStatus: 'failed',
+      resourceLink: null,
+    });
+    expect((await store.list(50))[0].error).toContain('media-unknown');
+  });
+
+  it('delivers the exact Reel link encoded in the tapped button payload', async () => {
+    const store = tempStore();
+    const config = testConfig({
+      commentMatchMode: 'any',
+      dmMessage: 'Here is your link: {link}',
+      mediaLinks: {
+        'media-1': 'https://example.com/reel-a',
+        'media-2': 'https://example.com/reel-b',
+      },
+    });
+    const sendDm = vi.fn(async (input: SendDmInput) => ({
+      messageId: `prompt-${input.commentId}`,
+      recipientId: 'user-9',
+    }));
+    const sendUserDm = vi.fn(async (_input: SendUserDmInput) => ({ messageId: 'link-a' }));
+    const deps = { store, config, sendDm, sendUserDm };
+
+    await processCommentEvents(
+      [
+        testComment({ commentId: 'comment-reel-a', mediaId: 'media-1', text: 'first' }),
+        testComment({ commentId: 'comment-reel-b', mediaId: 'media-2', text: 'second' }),
+      ],
+      deps,
+    );
+    const summary = await processMessageEvents(
+      [testClick({ payload: `${GET_LINK_PAYLOAD}:comment-reel-a` })],
+      deps,
+    );
+
+    expect(summary).toMatchObject({ clicks: 1, linkSent: 1 });
+    expect(sendUserDm.mock.calls[0][0].message).toBe('Here is your link: https://example.com/reel-a');
+    const records = await store.list(50);
+    expect(records.find((record) => record.commentId === 'comment-reel-a')).toMatchObject({
+      dmStatus: 'link_sent',
+      resourceLink: 'https://example.com/reel-a',
+    });
+    expect(records.find((record) => record.commentId === 'comment-reel-b')).toMatchObject({
+      dmStatus: 'prompt_sent',
+      resourceLink: 'https://example.com/reel-b',
+    });
+  });
+});
+
 describe('processMessageEvents — second follow check after button tap', () => {
   it('checks follow TWICE: before the prompt and again before the link', async () => {
     const store = tempStore();
@@ -340,7 +455,7 @@ describe('processMessageEvents — second follow check after button tap', () => 
     expect(sendUserDm.mock.calls[0][0]).toMatchObject({
       message: 'Please follow this account, then tap Try again.',
       quickReplyTitle: 'Try again',
-      quickReplyPayload: GET_LINK_PAYLOAD,
+      quickReplyPayload: `${GET_LINK_PAYLOAD}:comment-1`,
     });
     expect(sendUserDm.mock.calls[0][0].message).not.toContain('https://example.com/x');
     expect((await store.list(50))[0]).toMatchObject({
@@ -431,6 +546,13 @@ describe('renderDmMessage', () => {
     expect(renderDmMessage('Hi {username}, key={keyword}', { username: 'bob', keyword: 'link' })).toBe(
       'Hi @bob, key=link',
     );
+    expect(
+      renderDmMessage('Link: {link}', {
+        username: 'bob',
+        keyword: '',
+        link: 'https://example.com/a',
+      }),
+    ).toBe('Link: https://example.com/a');
     expect(renderDmMessage('x'.repeat(1200), { username: null, keyword: null })).toHaveLength(1000);
   });
 });

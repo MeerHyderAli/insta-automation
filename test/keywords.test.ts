@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getConfig, parseKeywords } from '../lib/config';
+import { getConfig, parseKeywords, resolveResourceLink } from '../lib/config';
 import { findKeyword } from '../lib/keywords';
 
 const KEYWORDS = ['link', 'links', 'lnik', 'likn'];
@@ -78,5 +78,36 @@ describe('follow gate config', () => {
     expect(config.introMessage).toContain('Thanks for commenting');
     expect(config.getLinkButtonText).toHaveLength(20);
     expect(config.tryAgainButtonText).toBe('Try again');
+  });
+});
+
+
+describe('comment match mode and per-Reel link config', () => {
+  it('defaults to keyword mode with a link-template final message', () => {
+    expect(getConfig({})).toMatchObject({
+      commentMatchMode: 'keywords',
+      dmMessage: 'Here is your link: {link}',
+      mediaLinks: {},
+      mediaLinksConfigError: null,
+      defaultLinkUrl: null,
+    });
+  });
+
+  it('parses any-comment mode and resolves a media-specific link before the fallback', () => {
+    const config = getConfig({
+      COMMENT_MATCH_MODE: 'ANY',
+      MEDIA_LINKS_JSON: '{"media-1":"https://example.com/reel-a"}',
+      DEFAULT_LINK_URL: 'https://example.com/default',
+    });
+
+    expect(config.commentMatchMode).toBe('any');
+    expect(resolveResourceLink(config, 'media-1')).toBe('https://example.com/reel-a');
+    expect(resolveResourceLink(config, 'media-2')).toBe('https://example.com/default');
+  });
+
+  it('reports invalid per-Reel link JSON instead of guessing', () => {
+    const config = getConfig({ MEDIA_LINKS_JSON: 'not-json' });
+    expect(config.mediaLinks).toEqual({});
+    expect(config.mediaLinksConfigError).toContain('MEDIA_LINKS_JSON');
   });
 });
