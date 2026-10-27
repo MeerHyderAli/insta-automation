@@ -31,12 +31,14 @@ or **any non-empty comment**.
   messaged the account. Their button tap creates that messaging
   interaction, after which check #2 decides whether to send the link or a
   follow-and-retry prompt. Set the flag `false` for strict prompt gating.
-- **Public comment replies mirror the first outcome:** a verified follower
-  is told to check DM and tap the button; a positively identified
-  non-follower is publicly asked to follow first and comment again (and
-  receives no DM); an unverified comment-first user is told to check DM and
-  tap so the follow can be verified there—not falsely told that the link was
-  sent. Public-reply status/ID/errors are tracked separately, so a public
+- **Public comment replies mirror the first outcome:** anyone who receives
+  the DM prompt is told to check DM and tap the button; a positively
+  identified non-follower is publicly asked to follow first and comment
+  again (and receives no DM). Meta often cannot distinguish an actual
+  follower from a non-follower at check #1 until that button tap, so the
+  default unverified public wording is also simply “check your DM”—follow
+  verification wording stays inside the DM at strict check #2.
+  Public-reply status/ID/errors are tracked separately, so a public
   reply failure never undoes a successful DM prompt or changes check #2.
 - Every comment ID is stored **before** sending, and every button-tap
   event ID is claimed before handling, so Meta redeliveries cannot produce
@@ -119,7 +121,7 @@ and never prefix a secret with `NEXT_PUBLIC_`.
 | `COMMENT_REPLY_ENABLED` | no | Public replies under triggering comments, default `true`. Uses `POST /<IG_COMMENT_ID>/replies` and requires `instagram_business_manage_comments`. Public-reply success/failure is tracked separately and never changes the DM/link result. Set `false` to disable. |
 | `COMMENT_REPLY_FOLLOWING_MESSAGE` | no | Public reply after check #1 verifies following **and** the DM prompt is sent. Default: “{username} check your DM 📩 Tap the button there to get your link.” It intentionally does not claim the link was already sent. |
 | `COMMENT_REPLY_NOT_FOLLOWING_MESSAGE` | no | Public reply when check #1 positively reports not following; no DM prompt is sent. Default asks the person to follow first and comment again. |
-| `COMMENT_REPLY_UNVERIFIED_MESSAGE` | no | Neutral public reply after an unverified/not-checked commenter receives the prompt. Default tells them to check DM and tap, where follow status is verified before any link. |
+| `COMMENT_REPLY_UNVERIFIED_MESSAGE` | no | Public reply after an unverified/not-checked commenter receives the prompt. It uses the same “check your DM” default as a verified follower because Meta may not be able to distinguish the two until the button tap; strict follow verification then happens in DM. |
 | `REQUIRE_FOLLOW_BEFORE_PROMPT` | yes, keep `true` | Check #1, before the thanks prompt. False = no prompt; unverified follows the comment-first setting below. |
 | `PROMPT_UNVERIFIED_COMMENTERS` | no | Comment-first mode, default `true`. An unverified check #1 (common Meta profile-consent error 230 before the person has messaged you) still receives the button prompt. The tap then allows strict check #2; no link is sent unless check #2 verifies the follow. Set `false` to block unverified commenters before the prompt. |
 | `REQUIRE_FOLLOW_FOR_LINK` | yes, keep `true` | Check #2, after the button tap and before `DM_MESSAGE`. False/unverified = follow prompt, no link. |
@@ -264,11 +266,10 @@ This runs
    account is recorded as "Own comment" and never DMs you.) An unmapped Reel
    fails closed with “No link configured for media …” and nobody is prompted,
    so map it before the full public test.
-3. A **public reply** should appear under the triggering comment. If Meta
-   verified the follower at check #1, it says to check DM and tap the
-   button. If the fresh tester is still unverified at check #1 (the normal
-   no-prior-DM case), it also says to check DM and tap, but notes that the
-   follow will be verified before the link is sent. In DM, the commenter
+3. A **public reply** should appear under the triggering comment. Whether
+   Meta verified the follower at check #1 or still reports the fresh tester
+   as unverified (the normal no-prior-DM case), the default public reply
+   simply says to check DM and tap the button. In DM, the commenter
    receives **only** the “Thanks for commenting” prompt with a **Click to
    get link** button — no link yet. Tap it: the app checks the follow a
    second time and then sends the link. The dashboard row moves **Thanks
@@ -285,6 +286,11 @@ This runs
    `PROMPT_UNVERIFIED_COMMENTERS=false`;
    with the default comment-first mode, they receive the prompt and strict
    check #2 decides the link.
+6. If a person comments before following, receives the prompt, and then
+   follows, they should tap the **existing DM button** (or **Try again** if
+   they already tapped once) rather than comment again. In any-comment
+   mode, another comment from that user on the same Reel is shown as
+   **Already handled for this Reel/post** to prevent duplicate flows.
 
 ### Token refresh (~every 60 days)
 

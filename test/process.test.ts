@@ -38,7 +38,7 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     commentReplyFollowingMessage: '{username} check your DM for the prompt.',
     commentReplyNotFollowingMessage: '{username} please follow first, then comment again.',
     commentReplyUnverifiedMessage:
-      '{username} check your DM; we will verify your follow there before sending the link.',
+      '{username} check your DM and tap the button to continue.',
     requireFollowBeforePrompt: false,
     promptUnverifiedCommenters: false,
     requireFollowForLink: false,
@@ -431,7 +431,7 @@ describe('public comment replies', () => {
     });
   });
 
-  it('uses neutral public wording when follow status is unverified at comment time', async () => {
+  it('uses check-DM public wording when follow status is unverified at comment time', async () => {
     const store = tempStore();
     const sendDm = vi.fn(async (_input: SendDmInput) => ({
       messageId: 'prompt-public-unverified',
@@ -463,7 +463,7 @@ describe('public comment replies', () => {
 
     expect(summary).toMatchObject({ promptSent: 1, commentRepliesSent: 1 });
     expect(replyToComment.mock.calls[0][0].message).toBe(
-      '@alice check your DM; we will verify your follow there before sending the link.',
+      '@alice check your DM and tap the button to continue.',
     );
     expect((await store.list(50))[0]).toMatchObject({
       followStatus: 'unverified',

@@ -20,7 +20,7 @@ export const DEFAULT_COMMENT_REPLY_FOLLOWING_MESSAGE =
 export const DEFAULT_COMMENT_REPLY_NOT_FOLLOWING_MESSAGE =
   '{username} please follow this account first, then comment again to get the link in your DM.';
 export const DEFAULT_COMMENT_REPLY_UNVERIFIED_MESSAGE =
-  '{username} check your DM 📩 Tap the button there and we’ll verify your follow before sending the link.';
+  DEFAULT_COMMENT_REPLY_FOLLOWING_MESSAGE;
 
 export type CommentMatchMode = 'keywords' | 'any';
 

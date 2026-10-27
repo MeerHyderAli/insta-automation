@@ -310,10 +310,10 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           {status.commentReplyEnabled ? (
             <>
               {' '}
-              Public replies mirror that result: confirmed followers are told to check DM,
-              confirmed non-followers are asked to follow first and comment again, and
-              unverified users who receive the prompt are not falsely told that a link was
-              sent.
+              Public replies mirror that result: users who receive the prompt are told to
+              check DM, confirmed non-followers are asked to follow first and comment
+              again, and follow-status wording is handled inside the DM after the tap
+              because Meta may not distinguish an actual follower before then.
             </>
           ) : null}
         </div>

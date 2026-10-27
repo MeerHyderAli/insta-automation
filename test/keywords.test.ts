@@ -96,7 +96,8 @@ describe('public comment reply config', () => {
     expect(config.commentReplyFollowingMessage).toContain('check your DM');
     expect(config.commentReplyFollowingMessage).not.toContain('link sent');
     expect(config.commentReplyNotFollowingMessage).toContain('please follow');
-    expect(config.commentReplyUnverifiedMessage).toContain('verify your follow');
+    expect(config.commentReplyUnverifiedMessage).toBe(config.commentReplyFollowingMessage);
+    expect(config.commentReplyUnverifiedMessage).not.toContain('verify your follow');
   });
 
   it('can disable public replies and customize their messages', () => {
